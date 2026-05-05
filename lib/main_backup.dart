@@ -1,39 +1,182 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
-import 'dart:convert'; // jsonEncode / jsonDecode のため
-import 'package:shared_preferences/shared_preferences.dart'; // 保存のため
-
-// 自分で作ったファイルを読み込む
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'keg_model.dart';
-import 'tank_data_tab.dart';
-import 'recipe_master_tab.dart';
-import 'inventory_tab.dart';
-import 'history_tab.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Supabase 初期化コード (url, anonKey)
   await Supabase.initialize(
     url: 'https://louoqnediuwsvbujoqhi.supabase.co',
     anonKey: 'sb_publishable_bLChdQpiXPUtVRciBrz55w_ynFYHzkp',
   );
-  runApp(const MyApp());
+
+  runApp(const AgarthaApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+// --- モデル類 ---
+class KegLog {
+  final DateTime timestamp;
+  final String action;
+  final String detail;
+  final String? memo;
+  final String prevStatus;
+  final String prevContents;
+  final String prevLocation;
+
+  KegLog({
+    required this.timestamp,
+    required this.action,
+    required this.detail,
+    this.memo,
+    this.prevStatus = 'EMPTY',
+    this.prevContents = '-',
+    this.prevLocation = '倉庫',
+  });
+
+  Map<String, dynamic> toJson() => {
+    't': timestamp.toIso8601String(),
+    'a': action,
+    'd': detail,
+    'm': memo,
+    'ps': prevStatus,
+    'pc': prevContents,
+    'pl': prevLocation,
+  };
+
+  factory KegLog.fromJson(Map<String, dynamic> json) => KegLog(
+    timestamp: DateTime.parse(json['t']),
+    action: json['a'],
+    detail: json['d'],
+    memo: json['m'],
+    prevStatus: json['ps'] ?? 'EMPTY',
+    prevContents: json['pc'] ?? '-',
+    prevLocation: json['pl'] ?? '倉庫',
+  );
+}
+
+class Keg {
+  String tag;
+  int number;
+  String status;
+  int ac25Count;
+  String contents;
+  String date;
+  String location;
+  String size;
+  String currentMemo;
+
+  // ★ NEW: 充填量、税金、販売管理用のプロパティを追加！
+  double? fillVolume;
+  DateTime? tapInAt;
+  DateTime? tapOutAt;
+  DateTime? shippedAt;
+  int? salePrice;
+  bool isTaxTriggered;
+
+  List<KegLog> history;
+
+  String get id => "$tag-$number";
+
+  Keg({
+    required this.tag,
+    required this.number,
+    this.status = 'EMPTY',
+    this.ac25Count = 0,
+    this.contents = '-',
+    this.date = '-',
+    this.location = '倉庫',
+    this.size = '20L',
+    this.currentMemo = '',
+    this.fillVolume,
+    this.tapInAt,
+    this.tapOutAt,
+    this.shippedAt,
+    this.salePrice,
+    this.isTaxTriggered = false,
+  }) : history = [];
+
+  void addLog(String action, String detail, {String? memo}) {
+    history.insert(
+      0,
+      KegLog(
+        timestamp: DateTime.now(),
+        action: action,
+        detail: detail,
+        memo: memo,
+        prevStatus: status,
+        prevContents: contents,
+        prevLocation: location,
+      ),
+    );
+  }
+
+  // ローカル保存用（SharedPreferences用）
+  Map<String, dynamic> toJson() => {
+    'tg': tag,
+    'n': number,
+    's': status,
+    'c': ac25Count,
+    'con': contents,
+    'd': date,
+    'l': location,
+    'sz': size,
+    'm': currentMemo,
+    'fv': fillVolume,
+    'ti': tapInAt?.toIso8601String(),
+    'to': tapOutAt?.toIso8601String(),
+    'sh': shippedAt?.toIso8601String(),
+    'sp': salePrice,
+    'tax': isTaxTriggered,
+    'h': history.map((e) => e.toJson()).toList(),
+  };
+
+  factory Keg.fromJson(Map<String, dynamic> json) {
+    var k = Keg(
+      tag: json['tg'] ?? 'A',
+      number: json['n'] ?? 0,
+      status: json['s'] ?? 'EMPTY',
+      ac25Count: json['c'] ?? 0,
+      contents: json['con'] ?? '-',
+      date: json['d'] ?? '-',
+      location: json['l'] ?? '倉庫',
+      size: json['sz'] ?? '20L',
+      currentMemo: json['m'] ?? '',
+      fillVolume: json['fv'],
+      tapInAt: json['ti'] != null ? DateTime.parse(json['ti']) : null,
+      tapOutAt: json['to'] != null ? DateTime.parse(json['to']) : null,
+      shippedAt: json['sh'] != null ? DateTime.parse(json['sh']) : null,
+      salePrice: json['sp'],
+      isTaxTriggered: json['tax'] ?? false,
+    );
+    if (json['h'] != null) {
+      k.history = (json['h'] as List).map((e) => KegLog.fromJson(e)).toList();
+    }
+    return k;
+  }
+}
+
+class Tank {
+  int id;
+  String beerName;
+  String brewDate;
+  Tank({required this.id, this.beerName = '-', this.brewDate = '-'});
+  Map<String, dynamic> toJson() => {'id': id, 'n': beerName, 'd': brewDate};
+  factory Tank.fromJson(Map<String, dynamic> json) =>
+      Tank(id: json['id'], beerName: json['n'], brewDate: json['d']);
+}
+
+class AgarthaApp extends StatelessWidget {
+  const AgarthaApp({super.key});
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        useMaterial3: true,
-        // Bikiさんの好きな白・黒・アンバーの配色
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.amber,
-          primary: Colors.black,
-        ),
+        scaffoldBackgroundColor: const Color(0xFFF9F1F0),
+        primaryColor: Colors.black,
       ),
       home: const KegManagerMain(),
     );
@@ -53,7 +196,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
   late List<Keg> allKegs = [];
   // late List<Tank> allTanks = []; // ← これは消します！
   List<Map<String, dynamic>> supabaseTanks = []; // ★ 代わりにこれを使います
-  bool _isLoading = true; // ★ これを追加！
+
   late List<String> externalLocs = ['A社'];
   Map<String, String?> tapMaster = {};
 
@@ -69,6 +212,8 @@ class _KegManagerMainState extends State<KegManagerMain> {
 
   String registrationTag = 'A';
   String deletionTag = 'A';
+  final TextEditingController _beerNameController = TextEditingController();
+  final TextEditingController _dateController = TextEditingController();
   final TextEditingController _memoController = TextEditingController();
   final TextEditingController _ac3Controller = TextEditingController();
   final TextEditingController _addKegCountController = TextEditingController();
@@ -102,19 +247,14 @@ class _KegManagerMainState extends State<KegManagerMain> {
   }
 
   Future<void> _loadData() async {
-    // ★ 追加：データの読み込み開始を知らせる
-    setState(() => _isLoading = true);
     final prefs = await SharedPreferences.getInstance();
 
+    // ★ NEW: Supabaseからリアルなタンクデータを引っ張ってくる！
     try {
       final data = await _supabase.from('tanks').select().order('id');
-      {
-        supabaseTanks = List<Map<String, dynamic>>.from(data);
-      }
+      supabaseTanks = List<Map<String, dynamic>>.from(data);
     } catch (e) {
       debugPrint('Supabaseタンク取得エラー: $e');
-    } finally {
-      setState(() => _isLoading = false);
     }
 
     setState(() {
@@ -140,6 +280,10 @@ class _KegManagerMainState extends State<KegManagerMain> {
         tapMaster[k.location] = k.id;
       }
     }
+  }
+
+  void _updateControllers() {
+    // TANK_EDITは廃止し、Supabaseのリアルタイムデータを使うため、ここは空にします
   }
 
   // ★ NEW: FILL IN 時に充填量を入力させるダイアログ
@@ -401,13 +545,6 @@ class _KegManagerMainState extends State<KegManagerMain> {
 
   @override
   Widget build(BuildContext context) {
-    // ★ これを追加！：ロード中なら画面を作らずに待つ
-    if (_isLoading) {
-      return const Scaffold(
-        backgroundColor: Color(0xFFF9F1F0),
-        body: Center(child: CircularProgressIndicator(color: Colors.black)),
-      );
-    }
     return Scaffold(
       body: SafeArea(
         child: Column(
@@ -483,7 +620,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
               child: TabBarView(
                 children: [
                   const TankDataTab(), // TANK画面
-                  HistoryTab(allKegs: allKegs), // ★ これから作るHISTORY画面
+                  const HistoryTab(), // ★ これから作るHISTORY画面
                   _buildDataTab(), // KEG画面
                 ],
               ),
@@ -1419,4 +1556,537 @@ class _KegManagerMainState extends State<KegManagerMain> {
       ),
     ),
   );
+}
+
+// --- ここから INVENTORY（材料マスタ・在庫管理）タブ ---
+// --- ここからファイルの最後まで上書き ---
+
+// 1. 在庫管理タブ
+class InventoryTab extends StatefulWidget {
+  const InventoryTab({super.key});
+  @override
+  State<InventoryTab> createState() => _InventoryTabState();
+}
+
+class _InventoryTabState extends State<InventoryTab> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _items = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchItems();
+  }
+
+  Future<void> _fetchItems() async {
+    setState(() => _isLoading = true);
+    try {
+      final data = await _supabase
+          .from('item_master')
+          .select()
+          .order('category_code');
+      setState(() {
+        _items = List<Map<String, dynamic>>.from(data);
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _showItemDialog([Map<String, dynamic>? existingItem]) {
+    final isEdit = existingItem != null;
+    final nameC = TextEditingController(
+      text: isEdit ? existingItem['name'] : '',
+    );
+    String cat = isEdit ? existingItem['category_code'] : 'M';
+    String unit = isEdit ? (existingItem['unit'] ?? 'kg') : 'kg';
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setD) => AlertDialog(
+          title: Text(isEdit ? '材料編集' : '新規登録'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameC,
+                decoration: const InputDecoration(labelText: '材料名'),
+              ),
+              DropdownButton<String>(
+                value: cat,
+                items: ['A', 'C', 'H', 'M', 'N', 'P', 'Y']
+                    .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+                    .toList(),
+                onChanged: (v) => setD(() => cat = v!),
+              ),
+              DropdownButton<String>(
+                value: unit,
+                items: ['kg', 'g', 'L', 'ml', '個', 'pack']
+                    .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+                    .toList(),
+                onChanged: (v) => setD(() => unit = v!),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () async {
+                final d = {
+                  'name': nameC.text,
+                  'category_code': cat,
+                  'unit': unit,
+                };
+                if (isEdit)
+                  await _supabase
+                      .from('item_master')
+                      .update(d)
+                      .eq('id', existingItem['id']);
+                else {
+                  d['id'] = '$cat-${DateTime.now().millisecondsSinceEpoch}';
+                  await _supabase.from('item_master').insert(d);
+                }
+                Navigator.pop(context);
+                _fetchItems();
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          color: Colors.black,
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'INVENTORY',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              ElevatedButton(
+                onPressed: () => _showItemDialog(),
+                child: const Text('新規登録'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : ListView.builder(
+                  itemCount: _items.length,
+                  itemBuilder: (context, index) {
+                    final item = _items[index];
+                    return ListTile(
+                      leading: CircleAvatar(child: Text(item['category_code'])),
+                      title: Text(item['name']),
+                      subtitle: Text('単位: ${item['unit']}'),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.edit),
+                        onPressed: () => _showItemDialog(item),
+                      ),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => ItemLedgerScreen(item: item),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+// 2. 在庫通帳（詳細）
+class ItemLedgerScreen extends StatefulWidget {
+  final Map<String, dynamic> item;
+  const ItemLedgerScreen({super.key, required this.item});
+  @override
+  State<ItemLedgerScreen> createState() => _ItemLedgerScreenState();
+}
+
+class _ItemLedgerScreenState extends State<ItemLedgerScreen> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _txs = [];
+  double _stock = 0.0;
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    final data = await _supabase
+        .from('inventory_transactions')
+        .select()
+        .eq('item_id', widget.item['id'])
+        .order('created_at', ascending: false);
+    double s = 0;
+    for (var r in data) {
+      double a = (r['amount'] as num).toDouble();
+      r['transaction_type'] == 'IN' ? s += a : s -= a;
+    }
+    setState(() {
+      _txs = List<Map<String, dynamic>>.from(data);
+      _stock = s;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.item['name']),
+        backgroundColor: Colors.amber,
+      ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            color: Colors.black,
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                const Text('現在高', style: TextStyle(color: Colors.white70)),
+                Text(
+                  '${_stock.toStringAsFixed(1)} ${widget.item['unit']}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: _txs.length,
+              itemBuilder: (context, index) {
+                final t = _txs[index];
+                final isOut = t['transaction_type'] == 'OUT';
+                return ListTile(
+                  title: Text(t['memo'] ?? '-'),
+                  trailing: Text(
+                    '${isOut ? "-" : "+"}${t['amount']}',
+                    style: TextStyle(
+                      color: isOut ? Colors.red : Colors.green,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 3. レシピ管理タブ
+class RecipeMasterTab extends StatefulWidget {
+  const RecipeMasterTab({super.key});
+  @override
+  State<RecipeMasterTab> createState() => _RecipeMasterTabState();
+}
+
+class _RecipeMasterTabState extends State<RecipeMasterTab> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _recipes = [];
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    final data = await _supabase
+        .from('recipes')
+        .select()
+        .order('created_at', ascending: false);
+    setState(() {
+      _recipes = List<Map<String, dynamic>>.from(data);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          color: Colors.black,
+          padding: const EdgeInsets.all(12),
+          child: const Text(
+            'RECIPE LIST',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: _recipes.length,
+            itemBuilder: (context, index) {
+              final r = _recipes[index];
+              return ListTile(
+                title: Text(r['name'] ?? ''),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => RecipeDetailScreen(recipe: r),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// 4. レシピ詳細（BOM）
+class RecipeDetailScreen extends StatefulWidget {
+  final Map<String, dynamic> recipe;
+  const RecipeDetailScreen({super.key, required this.recipe});
+  @override
+  State<RecipeDetailScreen> createState() => _RecipeDetailScreenState();
+}
+
+class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
+  final _supabase = Supabase.instance.client;
+  List<Map<String, dynamic>> _items = [];
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    final data = await _supabase
+        .from('recipe_items')
+        .select('amount, item_master(name, unit)')
+        .eq('recipe_id', widget.recipe['id']);
+    setState(() {
+      _items = List<Map<String, dynamic>>.from(data);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.recipe['name'])),
+      body: ListView.builder(
+        itemCount: _items.length,
+        itemBuilder: (context, index) {
+          final it = _items[index];
+          return ListTile(
+            title: Text(it['item_master']['name']),
+            trailing: Text('${it['amount']} ${it['item_master']['unit']}'),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// 5. タンクデータタブ
+class TankDataTab extends StatefulWidget {
+  const TankDataTab({super.key});
+  @override
+  State<TankDataTab> createState() => _TankDataTabState();
+}
+
+class _TankDataTabState extends State<TankDataTab> {
+  final _supabase = Supabase.instance.client;
+  int _selectedTankId = 1;
+  List<Map<String, dynamic>> _tanks = [];
+  List<Map<String, dynamic>> _logs = [];
+  List<Map<String, dynamic>> _recipes = [];
+  bool _isLoading = true;
+
+  final _tempController = TextEditingController();
+  final _sgController = TextEditingController();
+  final _phController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchData();
+  }
+
+  Future<void> _fetchData() async {
+    setState(() => _isLoading = true);
+    try {
+      final tanksData = await _supabase.from('tanks').select().order('id');
+      final recipesData = await _supabase
+          .from('recipes')
+          .select()
+          .order('name');
+
+      // 選択中のタンクのログを取得
+      final currentTank = tanksData.firstWhere(
+        (t) => t['id'] == _selectedTankId,
+      );
+      final batchId = currentTank['current_batch_id'];
+      List<Map<String, dynamic>> logsData = [];
+      if (batchId != null) {
+        logsData = await _supabase
+            .from('tank_logs')
+            .select()
+            .eq('batch_id', batchId)
+            .order('created_at', ascending: false);
+      }
+
+      setState(() {
+        _tanks = List<Map<String, dynamic>>.from(tanksData);
+        _recipes = List<Map<String, dynamic>>.from(recipesData);
+        _logs = List<Map<String, dynamic>>.from(logsData);
+        _isLoading = false;
+      });
+    } catch (e) {
+      debugPrint('取得エラー: $e');
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // グラフ描画（簡易版）
+  Widget _buildTrendGraph(String? startTime) {
+    if (startTime == null || _logs.isEmpty)
+      return const Center(child: Text('データなし'));
+    // ここに fl_chart を使ったグラフ処理が入ります
+    return Container(
+      height: 150,
+      width: double.infinity,
+      color: Colors.white10,
+      child: const Center(
+        child: Text('発酵グラフ表示エリア', style: TextStyle(color: Colors.white54)),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading)
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.amber),
+      );
+    final currentTank = _tanks.firstWhere((t) => t['id'] == _selectedTankId);
+
+    return Row(
+      children: [
+        // 左側：タンク選択リスト
+        Container(
+          width: 100,
+          decoration: const BoxDecoration(
+            border: Border(right: BorderSide(color: Colors.white12)),
+          ),
+          child: ListView.builder(
+            itemCount: _tanks.length,
+            itemBuilder: (context, index) {
+              final t = _tanks[index];
+              final isSel = _selectedTankId == t['id'];
+              return GestureDetector(
+                onTap: () {
+                  setState(() => _selectedTankId = t['id']);
+                  _fetchData();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  color: isSel ? Colors.amber : Colors.transparent,
+                  child: Center(
+                    child: Text(
+                      'TANK ${t['id']}',
+                      style: TextStyle(
+                        color: isSel ? Colors.black : Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        // 右側：詳細表示
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  currentTank['current_recipe'] ?? 'Empty',
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // グラフ
+                _buildTrendGraph(currentTank['start_time']),
+                const SizedBox(height: 20),
+                // 入力フォーム
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _tempController,
+                        decoration: const InputDecoration(labelText: 'Temp'),
+                        keyboardType: TextInputType.number,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: _sgController,
+                        decoration: const InputDecoration(labelText: 'SG'),
+                        keyboardType: TextInputType.number,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton(onPressed: () {}, child: const Text('SAVE')),
+                  ],
+                ),
+                const Divider(height: 40),
+                const Text('RECENT LOGS'),
+                ..._logs.map(
+                  (l) => ListTile(
+                    dense: true,
+                    title: Text(l['action'] ?? 'MEASURE'),
+                    subtitle: Text('T: ${l['temperature']} / S: ${l['sg']}'),
+                    trailing: Text(l['created_at'].toString().substring(5, 10)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// 6. 履歴タブ
+class HistoryTab extends StatelessWidget {
+  const HistoryTab({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return const Center(child: Text('History View (工事中)'));
+  }
 }
