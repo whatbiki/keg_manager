@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
-import 'dart:convert'; // jsonEncode / jsonDecode のため
-import 'package:shared_preferences/shared_preferences.dart'; // 保存のため
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 
-// 自分で作ったファイルを読み込む
-import 'keg_model.dart';
 import 'tank_data_tab.dart';
 import 'recipe_master_tab.dart';
 import 'inventory_tab.dart';
@@ -13,7 +11,6 @@ import 'history_tab.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Supabase 初期化コード (url, anonKey)
   await Supabase.initialize(
     url: 'https://louoqnediuwsvbujoqhi.supabase.co',
     anonKey: 'sb_publishable_bLChdQpiXPUtVRciBrz55w_ynFYHzkp',
@@ -29,7 +26,6 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        // Bikiさんの好きな白・黒・アンバーの配色
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.amber,
           primary: Colors.black,
@@ -47,102 +43,82 @@ class KegManagerMain extends StatefulWidget {
 }
 
 class _KegManagerMainState extends State<KegManagerMain> {
-  // ★ Supabaseのクライアントを追加
   final _supabase = Supabase.instance.client;
 
-  late List<Keg> allKegs = [];
-  // late List<Tank> allTanks = []; // ← これは消します！
-  List<Map<String, dynamic>> supabaseTanks = []; // ★ 代わりにこれを使います
-  bool _isLoading = true; // ★ これを追加！
+  List<Map<String, dynamic>> supabaseKegs = [];
+  List<Map<String, dynamic>> supabaseTanks = [];
+  bool _isLoading = true;
   late List<String> externalLocs = ['A社'];
-  Map<String, String?> tapMaster = {};
+  Map<String, int?> tapMaster = {};
 
   String selectedTab = 'JOB';
   String selectedJob = 'CLEAN';
   int selectedTankId = 1;
-  Set<String> selectedKegIds = {};
+  Set<String> selectedKegCodes = {};
   String selectedLocation = '冷蔵庫';
   String selectedCleanOption = 'AC25+ピュオロジェン';
   String selectedTapSlot = 'TAP 01';
-  String? dataSelectedKegId;
-  int ac3Threshold = 4;
+  int? dataSelectedKegId;
+  int ac3Threshold = 3;
 
   String registrationTag = 'A';
   String deletionTag = 'A';
-  final TextEditingController _memoController = TextEditingController();
-  final TextEditingController _ac3Controller = TextEditingController();
   final TextEditingController _addKegCountController = TextEditingController();
   final TextEditingController _addKegSizeController = TextEditingController();
   final TextEditingController _delKegIdController = TextEditingController();
   final TextEditingController _newLocController = TextEditingController();
 
+  String _filterTag = 'ALL';
+  String _filterStatus = 'ALL';
+  String _filterLocation = 'ALL';
+  final TextEditingController _kegMemoC = TextEditingController();
+  int? _lastSelectedKegId;
+
   @override
   void initState() {
     super.initState();
-    for (int i = 1; i <= 8; i++) {
-      tapMaster['TAP 0$i'] = null;
-    }
+    for (int i = 1; i <= 8; i++) tapMaster['TAP 0$i'] = null;
     _loadData();
   }
 
-  Future<void> _saveData() async {
+  Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      'agartha_final_v23',
-      jsonEncode(allKegs.map((e) => e.toJson()).toList()),
-    );
-
-    // ★ 削除: allTanks をローカル保存する処理はもう不要なので消しました！
-
-    await prefs.setString('agartha_ext_v23', jsonEncode(externalLocs));
-    await prefs.setInt(
-      'agartha_ac3_v23',
-      ac3Threshold,
-    ); // ※おまけ：ここの末尾のセミコロン(;)も足しておきました！
+    await prefs.setString('agartha_ext_v24', jsonEncode(externalLocs));
   }
 
   Future<void> _loadData() async {
-    // ★ 追加：データの読み込み開始を知らせる
     setState(() => _isLoading = true);
     final prefs = await SharedPreferences.getInstance();
 
     try {
-      final data = await _supabase.from('tanks').select().order('id');
-      {
-        supabaseTanks = List<Map<String, dynamic>>.from(data);
-      }
-    } catch (e) {
-      debugPrint('Supabaseタンク取得エラー: $e');
-    } finally {
-      setState(() => _isLoading = false);
-    }
+      final tData = await _supabase.from('tanks').select().order('id');
+      supabaseTanks = List<Map<String, dynamic>>.from(tData);
 
-    setState(() {
-      ac3Threshold = prefs.getInt('agartha_ac3_v23') ?? 4;
-      _ac3Controller.text = ac3Threshold.toString();
-
-      String? kj = prefs.getString('agartha_final_v23');
-      String? ej = prefs.getString('agartha_ext_v23');
-
-      allKegs = kj != null
-          ? (jsonDecode(kj) as List).map((e) => Keg.fromJson(e)).toList()
-          : [];
-      if (ej != null) externalLocs = List<String>.from(jsonDecode(ej));
+      final kData = await _supabase.from('kegs').select().order('keg_code');
+      supabaseKegs = List<Map<String, dynamic>>.from(kData);
 
       _syncTapMaster();
-    });
+    } catch (e) {
+      debugPrint('データ取得エラー: $e');
+    } finally {
+      setState(() {
+        String? ej = prefs.getString('agartha_ext_v24');
+        if (ej != null) externalLocs = List<String>.from(jsonDecode(ej));
+        _isLoading = false;
+      });
+    }
   }
 
   void _syncTapMaster() {
     tapMaster.updateAll((key, value) => null);
-    for (var k in allKegs) {
-      if (k.status == 'TAPPED' && k.location.startsWith('TAP')) {
-        tapMaster[k.location] = k.id;
+    for (var k in supabaseKegs) {
+      if (k['status'] == 'TAPPED' &&
+          k['location'].toString().startsWith('TAP')) {
+        tapMaster[k['location']] = k['id'];
       }
     }
   }
 
-  // ★ NEW: FILL IN 時に充填量を入力させるダイアログ
   Future<double?> _showFillVolumeDialog() async {
     final ctrl = TextEditingController();
     return showDialog<double>(
@@ -176,19 +152,17 @@ class _KegManagerMainState extends State<KegManagerMain> {
     );
   }
 
-  // ★ NEW: 外販 (MOVE) 時に販売価格を入力させるダイアログ
   Future<int?> _showSaleDialog(String companyName) async {
     final ctrl = TextEditingController();
     return showDialog<int>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('$companyName への移出・販売'),
+        title: Text('$companyName への販売・出庫'),
         content: TextField(
           controller: ctrl,
           keyboardType: TextInputType.number,
           decoration: const InputDecoration(
             labelText: '販売価格 (円)',
-            hintText: '例: 12000',
             suffixText: '円',
           ),
           autofocus: true,
@@ -211,189 +185,457 @@ class _KegManagerMainState extends State<KegManagerMain> {
     );
   }
 
-  // ★ 修正版：すべての赤線を消すための完全な _execute と TAP処理の塊
-  Future<void> _execute() async {
-    // 1. ダイアログ入力
-    double? inputVolume;
-    if (selectedJob == 'FILL IN' && selectedKegIds.isNotEmpty) {
-      inputVolume = await _showFillVolumeDialog();
-      if (inputVolume == null) return;
-    }
+  // ==========================================
+  // ★ 追加：どこでも使える薬品希釈計算機（ダイアログ）
+  // ==========================================
+  void _showDilutionCalculator() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        String selectedChemical = 'AC25 (アルカリ 2%)';
+        final List<String> chemOptions = [
+          'AC25 (アルカリ 2%)',
+          'AC3 (酸 1%)',
+          'Star San (1.5ml/L)',
+          'ピュオロジェン (50ppm)',
+          'カスタム濃度',
+        ];
+        final volCtrl = TextEditingController(text: '20');
+        final customRatioCtrl = TextEditingController(text: '1.0');
 
-    int? inputPrice;
-    bool isExternalMove =
-        selectedJob == 'MOVE' && externalLocs.contains(selectedLocation);
-    if (isExternalMove && selectedKegIds.isNotEmpty) {
-      inputPrice = await _showSaleDialog(selectedLocation);
-      if (inputPrice == null) return;
-    }
+        double reqChemicalMl = 0.0;
+        double reqWaterL = 0.0;
 
-    // 2. データ更新
-    if (selectedJob == 'TAP') {
-      _handleTapProcess();
-    } else {
-      for (var id in selectedKegIds) {
-        int idx = allKegs.indexWhere((k) => k.id == id);
-        if (idx == -1) continue;
-        var k = allKegs[idx];
+        void calculate(void Function(void Function()) setDialogState) {
+          double totalVolL = double.tryParse(volCtrl.text) ?? 0.0;
+          double chemVolL = 0.0;
 
-        if (selectedJob == 'MEMO') {
-          k.addLog('MEMO', 'User Memo', memo: _memoController.text);
-          k.currentMemo = _memoController.text;
-        } else if (selectedJob == 'CLEAN') {
-          k.addLog('CLEAN', selectedCleanOption);
-          k.status = 'CLEANED';
-          if (selectedCleanOption.contains('AC3')) {
-            k.ac25Count = 0;
-          } else {
-            k.ac25Count++;
+          if (selectedChemical == 'AC25 (アルカリ 2%)')
+            chemVolL = totalVolL * 0.02;
+          else if (selectedChemical == 'AC3 (酸 1%)')
+            chemVolL = totalVolL * 0.01;
+          else if (selectedChemical == 'Star San (1.5ml/L)')
+            chemVolL = (totalVolL * 1.5) / 1000;
+          else if (selectedChemical == 'ピュオロジェン (50ppm)')
+            chemVolL = totalVolL * 0.001; // 5%液想定
+          else if (selectedChemical == 'カスタム濃度') {
+            double customPercent = double.tryParse(customRatioCtrl.text) ?? 0.0;
+            chemVolL = totalVolL * (customPercent / 100);
           }
-          k.contents = '-';
-          k.date = '-';
-        } else if (selectedJob == 'FILL IN') {
-          Map<String, dynamic>? currentT;
-          try {
-            currentT = supabaseTanks.firstWhere(
-              (t) => t['id'] == selectedTankId,
+
+          setDialogState(() {
+            reqChemicalMl = chemVolL * 1000;
+            reqWaterL = totalVolL - chemVolL;
+            if (reqWaterL < 0) reqWaterL = 0;
+          });
+        }
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            // 初回計算
+            if (reqChemicalMl == 0 && reqWaterL == 0) calculate(setDialogState);
+
+            return AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.science, color: Colors.blueGrey),
+                  SizedBox(width: 8),
+                  Text('薬品・洗剤 希釈計算機'),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      value: selectedChemical,
+                      decoration: const InputDecoration(
+                        labelText: '薬品の種類',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: chemOptions
+                          .map(
+                            (c) => DropdownMenuItem(value: c, child: Text(c)),
+                          )
+                          .toList(),
+                      onChanged: (v) {
+                        selectedChemical = v!;
+                        calculate(setDialogState);
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: volCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '作成したい総液量 (L)',
+                        border: OutlineInputBorder(),
+                        suffixText: 'L',
+                      ),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      onChanged: (_) => calculate(setDialogState),
+                    ),
+                    if (selectedChemical == 'カスタム濃度') ...[
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: customRatioCtrl,
+                        decoration: const InputDecoration(
+                          labelText: '目標濃度 (%)',
+                          border: OutlineInputBorder(),
+                          suffixText: '%',
+                        ),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        onChanged: (_) => calculate(setDialogState),
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[50],
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue[200]!),
+                      ),
+                      child: Column(
+                        children: [
+                          const Text(
+                            '必要な原液量',
+                            style: TextStyle(
+                              color: Colors.blueGrey,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '${reqChemicalMl.toStringAsFixed(1)} ml',
+                            style: const TextStyle(
+                              fontSize: 32,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.blue,
+                            ),
+                          ),
+                          if (reqChemicalMl >= 1000)
+                            Text(
+                              '(= ${(reqChemicalMl / 1000).toStringAsFixed(2)} L)',
+                              style: const TextStyle(color: Colors.blueGrey),
+                            ),
+                          const Divider(),
+                          const Text(
+                            '必要な水量',
+                            style: TextStyle(
+                              color: Colors.blueGrey,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '${reqWaterL.toStringAsFixed(2)} L',
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.red[50],
+                        border: Border.all(color: Colors.red[200]!),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded, color: Colors.red),
+                          SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '危険: 必ず「水」に対して「薬品」を加えてください。薬品に水を加えると突沸の危険があります。',
+                              style: TextStyle(
+                                color: Colors.red,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text(
+                    '閉じる',
+                    style: TextStyle(color: Colors.black),
+                  ),
+                ),
+              ],
             );
-          } catch (e) {}
+          },
+        );
+      },
+    );
+  }
 
-          String recipeName = currentT?['current_recipe'] ?? '不明なビール';
-          String dateStr = currentT?['start_time'] != null
-              ? DateFormat(
-                  'yyyy/MM/dd',
-                ).format(DateTime.parse(currentT!['start_time']).toLocal())
-              : '-';
+  Future<void> _execute() async {
+    if (selectedKegCodes.isEmpty && selectedJob != 'TAP') return;
 
-          k.addLog(
-            'FILL IN',
-            'Tank $selectedTankId -> $recipeName ($inputVolume L)',
-          );
-          k.status = 'FILLED';
-          k.contents = recipeName;
-          k.date = dateStr;
-          k.location = '冷蔵庫';
-          k.fillVolume = inputVolume;
-          k.isTaxTriggered = false;
+    setState(() => _isLoading = true);
 
-          if (currentT != null && inputVolume != null) {
-            double beforeVol = (currentT['volume'] ?? 0.0).toDouble();
+    try {
+      double? inputVolume;
+      int? inputPrice;
+      bool isExternalMove =
+          selectedJob == 'MOVE' && externalLocs.contains(selectedLocation);
+
+      if (selectedJob == 'FILL IN') {
+        inputVolume = await _showFillVolumeDialog();
+        if (inputVolume == null) {
+          setState(() => _isLoading = false);
+          return;
+        }
+
+        for (var code in selectedKegCodes) {
+          var k = supabaseKegs.firstWhere((keg) => keg['keg_code'] == code);
+          double capacity = (k['capacity'] ?? 20.0).toDouble();
+          if (inputVolume > capacity) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '⚠️ エラー: $code (容量${capacity}L) に ${inputVolume}L は充填できません！',
+                ),
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 4),
+              ),
+            );
+            setState(() => _isLoading = false);
+            return;
+          }
+        }
+      }
+
+      if (isExternalMove) {
+        inputPrice = await _showSaleDialog(selectedLocation);
+        if (inputPrice == null) {
+          setState(() => _isLoading = false);
+          return;
+        }
+      }
+
+      if (selectedJob == 'TAP') {
+        await _handleTapProcess();
+      } else {
+        Map<String, dynamic>? activeBatchRes;
+        if (selectedJob == 'FILL IN') {
+          activeBatchRes = await _supabase
+              .from('batches')
+              .select('id')
+              .eq('tank_id', selectedTankId.toString())
+              .eq('status', 'Fermenting')
+              .maybeSingle();
+
+          if (activeBatchRes == null) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('⚠️ エラー: 選択したタンクに発酵中のバッチがありません。'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            setState(() => _isLoading = false);
+            return;
+          }
+        }
+
+        for (var code in selectedKegCodes) {
+          var k = supabaseKegs.firstWhere((keg) => keg['keg_code'] == code);
+          int internalId = k['id'];
+
+          if (selectedJob == 'CLEAN') {
+            int washCount = k['wash_count_since_acid'] ?? 0;
+            if (selectedCleanOption.contains('AC3')) {
+              washCount = 0;
+            } else {
+              washCount += 1;
+            }
+
             await _supabase
-                .from('tanks')
-                .update({'volume': beforeVol - inputVolume})
-                .eq('id', selectedTankId);
-            await _supabase.from('tank_logs').insert({
-              'tank_id': selectedTankId,
-              'recipe_name': recipeName,
-              'batch_id': currentT['current_batch_id'],
-              'batch_number': currentT['current_batch_number'],
-              'log_type': 'TRANSFER',
-              'amount_changed': inputVolume,
-              'action': '🚚 ケグ詰め: ${k.id} ($inputVolume L)',
-              'created_at': DateTime.now().toUtc().toIso8601String(),
+                .from('kegs')
+                .update({
+                  'status': 'CLEANED',
+                  'wash_count_since_acid': washCount,
+                  'last_wash_type': selectedCleanOption,
+                  'current_recipe': null,
+                  'current_batch_id': null,
+                  'location': '倉庫',
+                })
+                .eq('id', internalId);
+
+            await _supabase.from('keg_logs').insert({
+              'keg_id': internalId,
+              'action': 'CLEAN',
+              'detail': selectedCleanOption,
+              'created_at': DateTime.now().toIso8601String(),
+            });
+          } else if (selectedJob == 'FILL IN') {
+            Map<String, dynamic>? currentT;
+            try {
+              currentT = supabaseTanks.firstWhere(
+                (t) => t['id'] == selectedTankId,
+              );
+            } catch (e) {}
+            String recipeName = currentT?['current_recipe'] ?? '不明';
+            String batchStr = currentT?['current_batch_id'] ?? '';
+
+            String displayRecipe = batchStr.isNotEmpty
+                ? '$recipeName ($batchStr)'
+                : recipeName;
+
+            await _supabase
+                .from('kegs')
+                .update({
+                  'status': 'FILLED',
+                  'current_recipe': recipeName,
+                  'current_batch_id': batchStr,
+                  'location': '冷蔵庫',
+                  'fill_volume': inputVolume,
+                  'is_tax_triggered': false,
+                })
+                .eq('id', internalId);
+
+            await _supabase.from('keg_logs').insert({
+              'keg_id': internalId,
+              'action': 'FILL IN',
+              'detail':
+                  'Tank $selectedTankId -> $displayRecipe ($inputVolume L)',
+              'created_at': DateTime.now().toIso8601String(),
+            });
+          } else if (selectedJob == 'MOVE') {
+            Map<String, dynamic> updates = {'location': selectedLocation};
+            if (selectedLocation == 'DISCARD') {
+              updates['status'] = 'EMPTY';
+              updates['current_recipe'] = null;
+              updates['location'] = '倉庫';
+            } else if (selectedLocation == 'RETURN') {
+              updates['location'] = '冷蔵庫';
+            } else if (isExternalMove) {
+              updates['shipped_at'] = DateTime.now().toIso8601String();
+              updates['sale_price'] = inputPrice;
+              updates['is_tax_triggered'] = true;
+            }
+
+            await _supabase.from('kegs').update(updates).eq('id', internalId);
+            await _supabase.from('keg_logs').insert({
+              'keg_id': internalId,
+              'action': 'MOVE',
+              'detail': 'To $selectedLocation',
+              'created_at': DateTime.now().toIso8601String(),
             });
           }
-        } else if (selectedJob == 'MOVE') {
-          k.addLog('MOVE', 'To $selectedLocation');
-          if (selectedLocation == 'DISCARD') {
-            k.status = 'EMPTY';
-            k.contents = '-';
-            k.location = '倉庫';
-          } else if (selectedLocation == 'RETURN') {
-            k.location = '冷蔵庫';
-          } else {
-            k.location = selectedLocation;
-            if (externalLocs.contains(selectedLocation)) {
-              k.shippedAt = DateTime.now();
-              k.salePrice = inputPrice;
-              k.isTaxTriggered = true;
-            }
-          }
+        }
+
+        if (selectedJob == 'FILL IN' &&
+            activeBatchRes != null &&
+            inputVolume != null) {
+          double totalFilledVolume = inputVolume * selectedKegCodes.length;
+
+          await _supabase.from('fermentation_logs').insert({
+            'batch_id': activeBatchRes['id'],
+            'log_time': DateTime.now().toIso8601String(),
+            'action': 'パッケージング (${selectedKegCodes.length}樽)',
+            'dumped_vol_l': totalFilledVolume,
+            'memo':
+                'JOBタブからの一括ケグ充填 ($inputVolume L × ${selectedKegCodes.length}本)',
+          });
         }
       }
+
+      setState(() => selectedKegCodes.clear());
+      await _loadData();
+    } catch (e) {
+      debugPrint('JOB実行エラー: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('エラー: $e')));
+      setState(() => _isLoading = false);
     }
-
-    // 3. 画面リフレッシュと保存
-    setState(() {
-      if (selectedJob == 'MEMO') _memoController.clear();
-      selectedKegIds.clear();
-    });
-
-    await _saveData();
-    await _loadData();
   }
 
-  // ★ TAPの処理（独立した関数）
-  void _handleTapProcess() {
-    setState(() {
-      String? currentKegIdInTap = tapMaster[selectedTapSlot];
-      if (currentKegIdInTap == null) {
-        if (selectedKegIds.length == 1) {
-          String newId = selectedKegIds.first;
-          int idx = allKegs.indexWhere((k) => k.id == newId);
-          allKegs[idx].addLog('TAP IN', 'Opened at $selectedTapSlot');
-          allKegs[idx].location = selectedTapSlot;
-          allKegs[idx].status = 'TAPPED';
-          allKegs[idx].tapInAt = DateTime.now();
-          allKegs[idx].isTaxTriggered = true;
-          tapMaster[selectedTapSlot] = newId;
-        }
-      } else {
-        int idx = allKegs.indexWhere((k) => k.id == currentKegIdInTap);
-        if (idx != -1) {
-          allKegs[idx].addLog('TAP OUT', 'Empty at $selectedTapSlot');
-          allKegs[idx].status = 'EMPTY';
-          allKegs[idx].location = '倉庫';
-          allKegs[idx].contents = '-';
-          allKegs[idx].tapOutAt = DateTime.now();
-        }
-        tapMaster[selectedTapSlot] = null;
+  Future<void> _handleTapProcess() async {
+    int? currentIdInTap = tapMaster[selectedTapSlot];
+
+    if (currentIdInTap == null) {
+      if (selectedKegCodes.length == 1) {
+        var k = supabaseKegs.firstWhere(
+          (k) => k['keg_code'] == selectedKegCodes.first,
+        );
+        int internalId = k['id'];
+
+        await _supabase
+            .from('kegs')
+            .update({
+              'status': 'TAPPED',
+              'location': selectedTapSlot,
+              'tap_in_at': DateTime.now().toIso8601String(),
+              'is_tax_triggered': true,
+            })
+            .eq('id', internalId);
+
+        await _supabase.from('keg_logs').insert({
+          'keg_id': internalId,
+          'action': 'TAP IN',
+          'detail': 'Opened at $selectedTapSlot',
+          'created_at': DateTime.now().toIso8601String(),
+        });
       }
-      selectedKegIds.clear();
-      _saveData();
-    });
+    } else {
+      await _supabase
+          .from('kegs')
+          .update({
+            'status': 'EMPTY',
+            'location': '倉庫',
+            'current_recipe': null,
+            'current_batch_id': null,
+            'tap_out_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', currentIdInTap);
+
+      await _supabase.from('keg_logs').insert({
+        'keg_id': currentIdInTap,
+        'action': 'TAP OUT',
+        'detail': 'Empty at $selectedTapSlot',
+        'created_at': DateTime.now().toIso8601String(),
+      });
+    }
   }
 
-  // ★ 後戻り（Undo）機能
-  void _undoLatestHistory(Keg k) {
-    if (k.history.isEmpty) return;
-    setState(() {
-      KegLog latest = k.history.removeAt(0);
-      k.status = latest.prevStatus;
-      k.contents = latest.prevContents;
-      k.location = latest.prevLocation;
-
-      if (latest.action == 'CLEAN') {
-        if (latest.detail.contains('AC3')) {
-          k.ac25Count = ac3Threshold;
-        } else if (k.ac25Count > 0) {
-          k.ac25Count--;
-        }
-      } else if (latest.action == 'FILL IN') {
-        k.fillVolume = null;
-        k.isTaxTriggered = false;
-      } else if (latest.action == 'TAP IN') {
-        k.tapInAt = null;
-        k.isTaxTriggered = false;
-      } else if (latest.action == 'TAP OUT') {
-        k.tapOutAt = null;
-      } else if (latest.action == 'MOVE' && latest.detail.contains('To')) {
-        k.shippedAt = null;
-        k.salePrice = null;
-        k.isTaxTriggered = false;
-      }
-      _syncTapMaster();
-      _saveData();
-    });
+  int _extractKegNumber(String kegCode) {
+    final parts = kegCode.split('-');
+    if (parts.length > 1) {
+      return int.tryParse(parts.last) ?? 0;
+    }
+    return 0;
   }
 
-  bool _isSelectable(Keg k) {
-    if (selectedJob == 'CLEAN') return k.status == 'EMPTY';
-    if (selectedJob == 'FILL IN') return k.status == 'CLEANED';
-    if (selectedJob == 'MOVE') return (k.status == 'FILLED');
+  bool _isSelectable(Map<String, dynamic> k) {
+    String st = k['status'] ?? 'EMPTY';
+    if (selectedJob == 'CLEAN') return st == 'EMPTY';
+    if (selectedJob == 'FILL IN') return st == 'CLEANED';
+    if (selectedJob == 'MOVE') return st == 'FILLED';
     if (selectedJob == 'TAP') {
-      return k.status == 'FILLED' &&
-          k.location == '冷蔵庫' &&
+      return st == 'FILLED' &&
+          k['location'] == '冷蔵庫' &&
           tapMaster[selectedTapSlot] == null;
     }
     return true;
@@ -401,7 +643,6 @@ class _KegManagerMainState extends State<KegManagerMain> {
 
   @override
   Widget build(BuildContext context) {
-    // ★ これを追加！：ロード中なら画面を作らずに待つ
     if (_isLoading) {
       return const Scaffold(
         backgroundColor: Color(0xFFF9F1F0),
@@ -409,6 +650,12 @@ class _KegManagerMainState extends State<KegManagerMain> {
       );
     }
     return Scaffold(
+      // ★ 追加: 画面右下に浮かぶ計算機ボタン！
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: Colors.amber,
+        onPressed: _showDilutionCalculator,
+        child: const Icon(Icons.calculate, color: Colors.black, size: 28),
+      ),
       body: SafeArea(
         child: Column(
           children: [
@@ -428,7 +675,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           const Text(
-            'BREW WORKS MANAGEMER',
+            'BREW WORKS MANAGER',
             style: TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.bold,
@@ -459,40 +706,8 @@ class _KegManagerMainState extends State<KegManagerMain> {
       ),
     ),
   );
-  Widget _buildBody() {
-    // --- 新追加：DATAタブの中を3つに分けるラッパー ---
-    Widget _buildDataTabWrapper() {
-      return DefaultTabController(
-        length: 3, // ★ 2から3に変更！
-        child: Column(
-          children: [
-            Container(
-              color: Colors.black87,
-              child: const TabBar(
-                indicatorColor: Colors.amber,
-                labelColor: Colors.amber,
-                unselectedLabelColor: Colors.grey,
-                tabs: [
-                  Tab(icon: Icon(Icons.science), text: 'TANK (現在)'),
-                  Tab(icon: Icon(Icons.history), text: 'HISTORY (過去)'), // ★ 追加！
-                  Tab(icon: Icon(Icons.kitchen), text: 'KEG (在庫)'),
-                ],
-              ),
-            ),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  const TankDataTab(), // TANK画面
-                  HistoryTab(allKegs: allKegs), // ★ これから作るHISTORY画面
-                  _buildDataTab(), // KEG画面
-                ],
-              ),
-            ),
-          ],
-        ),
-      );
-    }
 
+  Widget _buildBody() {
     if (selectedTab == 'DATA') return _buildDataTabWrapper();
     if (selectedTab == 'SET') return _buildSetWrapper();
     if (selectedTab == 'INVENTORY') return const InventoryTab();
@@ -502,13 +717,11 @@ class _KegManagerMainState extends State<KegManagerMain> {
     );
   }
 
-  // --- 新追加：SETタブの中をさらに2つの画面に分ける仕組み ---
-  Widget _buildSetWrapper() {
+  Widget _buildDataTabWrapper() {
     return DefaultTabController(
-      length: 2, // タブの数
+      length: 3,
       child: Column(
         children: [
-          // 上部の切り替えボタン（黒と黄色で統一！）
           Container(
             color: Colors.black87,
             child: const TabBar(
@@ -516,18 +729,46 @@ class _KegManagerMainState extends State<KegManagerMain> {
               labelColor: Colors.amber,
               unselectedLabelColor: Colors.grey,
               tabs: [
-                Tab(icon: Icon(Icons.science), text: 'RECIPE (液種管理)'),
+                Tab(icon: Icon(Icons.science), text: 'TANK (現在)'),
+                Tab(icon: Icon(Icons.kitchen), text: 'KEG (在庫)'),
+                Tab(icon: Icon(Icons.history), text: 'HISTORY (履歴)'),
+              ],
+            ),
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                const TankDataTab(),
+                _buildDataTab(),
+                const HistoryTab(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSetWrapper() {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          Container(
+            color: Colors.black87,
+            child: const TabBar(
+              indicatorColor: Colors.amber,
+              labelColor: Colors.amber,
+              unselectedLabelColor: Colors.grey,
+              tabs: [
+                Tab(icon: Icon(Icons.menu_book), text: 'RECIPE (液種管理)'),
                 Tab(icon: Icon(Icons.settings), text: 'SYSTEM (ケグ・設定)'),
               ],
             ),
           ),
-          // 選んだタブの中身を表示するエリア
           Expanded(
             child: TabBarView(
-              children: [
-                const RecipeMasterTab(), // 新しく作ったレシピ画面
-                _buildSetTab(), // ★先ほど見せていただいた昔の設定画面！（_buildSetTab という名前ならアンダーバーをつけてください）
-              ],
+              children: [const RecipeMasterTab(), _buildSetTab()],
             ),
           ),
         ],
@@ -541,7 +782,10 @@ class _KegManagerMainState extends State<KegManagerMain> {
       children: [
         Row(
           children: [
-            const SizedBox(width: 50, child: Text('JOB')),
+            const SizedBox(
+              width: 50,
+              child: Text('JOB', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
             Expanded(
               child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
@@ -551,7 +795,6 @@ class _KegManagerMainState extends State<KegManagerMain> {
                     'FILL IN',
                     'MOVE',
                     'TAP',
-                    'MEMO',
                   ].map((j) => _jobBtn(j)).toList(),
                 ),
               ),
@@ -560,7 +803,6 @@ class _KegManagerMainState extends State<KegManagerMain> {
         ),
         const SizedBox(height: 10),
 
-        // ★ UPDATE: EDITボタンを削除し、Supabaseのデータを表示
         if (selectedJob == 'FILL IN') ...[
           Row(
             children: [
@@ -583,28 +825,18 @@ class _KegManagerMainState extends State<KegManagerMain> {
               child: Builder(
                 builder: (context) {
                   Map<String, dynamic>? currentTank;
-                  if (supabaseTanks.isNotEmpty) {
-                    try {
-                      currentTank = supabaseTanks.firstWhere(
-                        (t) => t['id'] == selectedTankId,
-                      );
-                    } catch (e) {}
-                  }
-
+                  try {
+                    currentTank = supabaseTanks.firstWhere(
+                      (t) => t['id'] == selectedTankId,
+                    );
+                  } catch (e) {}
                   String displayRecipe =
                       currentTank?['current_recipe'] ?? 'Empty (空です)';
-                  String displayBatch =
-                      currentTank?['current_batch_number'] != null
-                      ? '_${currentTank!['current_batch_number']}'
+                  String displayBatch = currentTank?['current_batch_id'] != null
+                      ? ' (${currentTank!['current_batch_id']})'
                       : '';
-                  String displayDate = currentTank?['start_time'] != null
-                      ? DateFormat('yyyy/MM/dd').format(
-                          DateTime.parse(currentTank!['start_time']).toLocal(),
-                        )
-                      : '-';
-
                   return Text(
-                    '$displayRecipe $displayBatch  $displayDate',
+                    '$displayRecipe $displayBatch',
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -632,29 +864,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
         const Text('KEG GRID', style: TextStyle(fontWeight: FontWeight.bold)),
         _buildKegGrid(),
 
-        if (selectedJob == 'MOVE' && selectedKegIds.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          const Text(
-            'SELECTED KEGS DETAILS',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-          ),
-          Container(
-            width: double.infinity,
-            height: 120,
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.black),
-              color: Colors.white,
-            ),
-            child: SingleChildScrollView(
-              child: Text(
-                _getSelectedKegsDetails(),
-                style: const TextStyle(fontSize: 10),
-              ),
-            ),
-          ),
-        ],
-        if (selectedJob == 'MOVE') ...[
+        if (selectedJob == 'MOVE' && selectedKegCodes.isNotEmpty) ...[
           const SizedBox(height: 10),
           const Text(
             'MOVE TO LOCATION',
@@ -676,33 +886,39 @@ class _KegManagerMainState extends State<KegManagerMain> {
     );
   }
 
-  String _getSelectedKegsDetails() {
-    List<String> sortedIds = selectedKegIds.toList()..sort();
-    return sortedIds
-        .map((id) {
-          var k = allKegs.firstWhere((keg) => keg.id == id);
-          return '${k.id}: ${k.contents} (@${k.location})';
-        })
-        .join('  /  ');
-  }
-
   Widget _buildKegGrid() {
-    if (allKegs.isEmpty) {
+    if (supabaseKegs.isEmpty)
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(20),
           child: Text("No Kegs Registered."),
         ),
       );
-    }
-    var aKegs = allKegs.where((k) => k.tag == 'A').toList();
-    var oKegs = allKegs.where((k) => k.tag == 'O').toList();
+
+    var aKegs = supabaseKegs
+        .where((k) => k['keg_code'].toString().startsWith('A'))
+        .toList();
+    aKegs.sort(
+      (a, b) => _extractKegNumber(
+        a['keg_code'],
+      ).compareTo(_extractKegNumber(b['keg_code'])),
+    );
+
+    var oKegs = supabaseKegs
+        .where((k) => k['keg_code'].toString().startsWith('O'))
+        .toList();
+    oKegs.sort(
+      (a, b) => _extractKegNumber(
+        a['keg_code'],
+      ).compareTo(_extractKegNumber(b['keg_code'])),
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (aKegs.isNotEmpty) ...[
           const Text(
-            "TAG-A",
+            "TAG-A (自社用 SUS)",
             style: TextStyle(fontSize: 10, color: Colors.grey),
           ),
           _gridPart(aKegs),
@@ -710,7 +926,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
         const SizedBox(height: 8),
         if (oKegs.isNotEmpty) ...[
           const Text(
-            "TAG-O",
+            "TAG-O (ワンウェイ PET)",
             style: TextStyle(fontSize: 10, color: Colors.grey),
           ),
           _gridPart(oKegs),
@@ -719,35 +935,38 @@ class _KegManagerMainState extends State<KegManagerMain> {
     );
   }
 
-  Widget _gridPart(List<Keg> list) {
+  Widget _gridPart(List<Map<String, dynamic>> list) {
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 10,
-        mainAxisSpacing: 2,
-        crossAxisSpacing: 2,
-        childAspectRatio: 1.6,
+        mainAxisSpacing: 4,
+        crossAxisSpacing: 4,
+        childAspectRatio: 1.5,
       ),
       itemCount: list.length,
       itemBuilder: (c, i) {
         var k = list[i];
-        bool isS = selectedKegIds.contains(k.id);
+        String kCode = k['keg_code'];
+        bool isS = selectedKegCodes.contains(kCode);
         bool canS = _isSelectable(k);
         Color bg = isS
             ? Colors.black
             : (canS
-                  ? (k.status == 'CLEANED'
+                  ? (k['status'] == 'CLEANED'
                         ? Colors.green[50]!
-                        : (k.status == 'FILLED'
-                              ? Colors.grey[200]!
+                        : (k['status'] == 'FILLED'
+                              ? Colors.blueGrey[100]!
                               : Colors.white))
-                  : Colors.grey[400]!);
+                  : Colors.grey[300]!);
         return GestureDetector(
           onTap: canS
               ? () => setState(() {
-                  if (selectedJob == 'TAP') selectedKegIds.clear();
-                  isS ? selectedKegIds.remove(k.id) : selectedKegIds.add(k.id);
+                  if (selectedJob == 'TAP') selectedKegCodes.clear();
+                  isS
+                      ? selectedKegCodes.remove(kCode)
+                      : selectedKegCodes.add(kCode);
                 })
               : null,
           child: Container(
@@ -757,12 +976,12 @@ class _KegManagerMainState extends State<KegManagerMain> {
             ),
             child: Center(
               child: Text(
-                k.id,
+                kCode,
                 style: TextStyle(
                   color: isS
                       ? Colors.white
-                      : (canS ? Colors.black : Colors.black26),
-                  fontSize: 7,
+                      : (canS ? Colors.black : Colors.black38),
+                  fontSize: 14,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -774,25 +993,22 @@ class _KegManagerMainState extends State<KegManagerMain> {
   }
 
   Widget _buildWorkspace() {
-    // --- 判定ロジックを修正 ---
     List<String> ac3Alerts = [];
     if (selectedJob == 'CLEAN') {
-      for (var id in selectedKegIds) {
-        // allKegsからIDで検索
-        int idx = allKegs.indexWhere((k) => k.id == id);
-        if (idx != -1 && allKegs[idx].ac25Count >= ac3Threshold) {
-          ac3Alerts.add(id);
-        }
+      for (var code in selectedKegCodes) {
+        var k = supabaseKegs.firstWhere((k) => k['keg_code'] == code);
+        int wc = k['wash_count_since_acid'] ?? 0;
+        if (wc >= ac3Threshold && code.startsWith('A')) ac3Alerts.add(code);
       }
     }
     String btnText =
         (selectedJob == 'TAP' && tapMaster[selectedTapSlot] != null)
         ? "TAP OUT"
-        : "SET";
+        : "SET (実行)";
     Color btnColor =
         (selectedJob == 'TAP' && tapMaster[selectedTapSlot] != null)
         ? Colors.red[700]!
-        : Colors.black;
+        : Colors.amber[700]!;
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -808,11 +1024,10 @@ class _KegManagerMainState extends State<KegManagerMain> {
               padding: const EdgeInsets.only(bottom: 10),
               width: double.infinity,
               child: Text(
-                "⚠️ AC3推奨ケグあり: ${ac3Alerts.join(', ')}",
+                "⚠️ AC3(酸洗浄)推奨: ${ac3Alerts.join(', ')}",
                 style: const TextStyle(
                   color: Colors.red,
                   fontWeight: FontWeight.bold,
-                  fontSize: 12,
                 ),
               ),
             ),
@@ -836,6 +1051,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: btnColor,
+                  foregroundColor: Colors.white,
                   shape: const RoundedRectangleBorder(
                     borderRadius: BorderRadius.zero,
                   ),
@@ -843,10 +1059,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
                 onPressed: _execute,
                 child: Text(
                   btnText,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
             ],
@@ -859,14 +1072,11 @@ class _KegManagerMainState extends State<KegManagerMain> {
   }
 
   Widget _buildWorkspaceContent() {
-    // TANK_EDIT のコードは完全に削除しました！
-
-    // CLEAN
     if (selectedJob == 'CLEAN') {
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _infoBox('KEG', '${selectedKegIds.length}', 'selected'),
+          _infoBox('KEG', '${selectedKegCodes.length}', 'selected'),
           const Text(
             'DO',
             style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
@@ -884,15 +1094,12 @@ class _KegManagerMainState extends State<KegManagerMain> {
         ],
       );
     }
-
     if (selectedJob == 'FILL IN') {
-      // ★ UPDATE: 画面下部の TANK 情報も Supabase から取得
       String recipeName = 'Empty';
       try {
         final t = supabaseTanks.firstWhere((t) => t['id'] == selectedTankId);
         recipeName = t['current_recipe'] ?? 'Empty';
       } catch (e) {}
-
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
@@ -901,16 +1108,15 @@ class _KegManagerMainState extends State<KegManagerMain> {
             'TO',
             style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
           ),
-          _infoBox('KEGS', '${selectedKegIds.length}', 'selected'),
+          _infoBox('KEGS', '${selectedKegCodes.length}', 'selected'),
         ],
       );
     }
-
     if (selectedJob == 'MOVE') {
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _infoBox('KEGS', '${selectedKegIds.length}', 'selected'),
+          _infoBox('KEGS', '${selectedKegCodes.length}', 'selected'),
           const Text(
             'TO',
             style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
@@ -919,58 +1125,24 @@ class _KegManagerMainState extends State<KegManagerMain> {
         ],
       );
     }
-
     if (selectedJob == 'TAP') {
-      String? currentId = tapMaster[selectedTapSlot];
-      String kegDisp =
-          currentId ?? (selectedKegIds.isEmpty ? '?' : selectedKegIds.first);
-      String beerName = '-';
-      String dateInfo = 'Target';
-      if (currentId != null) {
-        int idx = allKegs.indexWhere((k) => k.id == currentId);
-        if (idx != -1) {
-          var k = allKegs[idx];
-          beerName = k.contents;
-          var log = k.history.firstWhere(
-            (l) => l.action == 'TAP IN',
-            orElse: () =>
-                KegLog(timestamp: DateTime.now(), action: '', detail: ''),
-          );
-          dateInfo = DateFormat('MM/dd HH:mm').format(log.timestamp);
-        }
-      } else if (selectedKegIds.isNotEmpty) {
-        beerName = allKegs
-            .firstWhere((k) => k.id == selectedKegIds.first)
-            .contents;
-      }
+      int? currentId = tapMaster[selectedTapSlot];
+      String kegDisp = currentId != null
+          ? supabaseKegs.firstWhere((k) => k['id'] == currentId)['keg_code']
+          : (selectedKegCodes.isEmpty ? '?' : selectedKegCodes.first);
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _infoBox('KEG', kegDisp, beerName),
+          _infoBox('KEG', kegDisp, 'Tap Action'),
           const Text(
             'TO',
             style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
           ),
-          _infoBox('TAP', selectedTapSlot, dateInfo),
+          _infoBox('TAP', selectedTapSlot, '-'),
         ],
       );
     }
-
-    return Row(
-      children: [
-        Text('${selectedKegIds.length} Kegs Selected'),
-        if (selectedJob == 'MEMO')
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: TextField(
-                controller: _memoController,
-                decoration: const InputDecoration(hintText: 'Memo...'),
-              ),
-            ),
-          ),
-      ],
-    );
+    return const SizedBox();
   }
 
   Widget _infoBox(String t, String v, String s) => Column(
@@ -1009,174 +1181,366 @@ class _KegManagerMainState extends State<KegManagerMain> {
   }
 
   Widget _buildDataTab() {
-    List<Keg> sortedKegs = List.from(allKegs);
-    sortedKegs.sort((a, b) {
-      bool aHasMemo = a.currentMemo.isNotEmpty;
-      bool bHasMemo = b.currentMemo.isNotEmpty;
-      if (aHasMemo != bHasMemo) return aHasMemo ? -1 : 1;
-      if (a.tag != b.tag) return a.tag.compareTo(b.tag);
-      return a.number.compareTo(b.number);
-    });
-
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           flex: 2,
-          child: ListView.builder(
-            itemCount: sortedKegs.length,
-            itemBuilder: (c, i) {
-              var k = sortedKegs[i];
-              bool isSel = dataSelectedKegId == k.id;
-              String lastTime = k.history.isEmpty
-                  ? '-'
-                  : DateFormat('MM/dd HH:mm').format(k.history.first.timestamp);
-              bool hasMemo = k.currentMemo.isNotEmpty;
-              return GestureDetector(
-                onTap: () => setState(() => dataSelectedKegId = k.id),
-                child: Container(
-                  margin: const EdgeInsets.all(2),
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: hasMemo ? Colors.amber[300]! : Colors.black,
-                    ),
-                    color: isSel ? Colors.black12 : Colors.white,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            '${k.id} ${k.status}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 11,
-                            ),
-                          ),
-                          Text(lastTime, style: const TextStyle(fontSize: 8)),
-                        ],
-                      ),
-                      Text(
-                        '${k.contents} / ${k.location}',
-                        style: const TextStyle(fontSize: 10),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            color: Colors.grey[100],
+            child: _buildFilterPane(),
           ),
         ),
         const VerticalDivider(width: 1),
+        Expanded(flex: 3, child: _buildFilteredKegList()),
+        const VerticalDivider(width: 1),
         Expanded(
-          flex: 3,
+          flex: 5,
           child: dataSelectedKegId == null
-              ? const Center(child: Text('Select Keg'))
-              : _buildDetail(
-                  allKegs.firstWhere((k) => k.id == dataSelectedKegId),
-                ),
+              ? const Center(
+                  child: Text(
+                    'リストからケグを選択してください',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                )
+              : _buildKegDetailPane(),
         ),
       ],
     );
   }
 
-  Widget _buildDetail(Keg k) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(10),
-          color: Colors.black,
-          width: double.infinity,
-          child: Text(
-            '${k.id} [${k.status}]',
-            style: const TextStyle(
-              color: Colors.white,
+  Widget _buildFilterPane() {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '🔍 絞り込み',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          const Divider(),
+          const SizedBox(height: 8),
+
+          const Text(
+            '■ 記号 (TAG)',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey,
               fontWeight: FontWeight.bold,
             ),
           ),
-        ),
-        if (k.currentMemo.isNotEmpty)
-          Container(
-            margin: const EdgeInsets.all(8),
-            padding: const EdgeInsets.all(8),
-            color: Colors.amber[50],
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.push_pin, size: 16, color: Colors.orange),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    'MEMO: ${k.currentMemo}',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
+          Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: ['ALL', 'A', 'O']
+                .map(
+                  (t) => ChoiceChip(
+                    label: Text(t),
+                    selected: _filterTag == t,
+                    onSelected: (s) => setState(() => _filterTag = t),
                   ),
-                ),
-              ],
+                )
+                .toList(),
+          ),
+          const SizedBox(height: 16),
+
+          const Text(
+            '■ 状態 (STATUS)',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey,
+              fontWeight: FontWeight.bold,
             ),
           ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Text(
-            'AC25: ${k.ac25Count}回 / ${k.contents}',
+          Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: ['ALL', 'EMPTY', 'CLEANED', 'FILLED', 'TAPPED']
+                .map(
+                  (t) => ChoiceChip(
+                    label: Text(t),
+                    selected: _filterStatus == t,
+                    onSelected: (s) => setState(() => _filterStatus = t),
+                  ),
+                )
+                .toList(),
+          ),
+          const SizedBox(height: 16),
+
+          const Text(
+            '■ 場所 (LOCATION)',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: ['ALL', '倉庫', '冷蔵庫', 'TAP', '客先(外販)']
+                .map(
+                  (t) => ChoiceChip(
+                    label: Text(t),
+                    selected: _filterLocation == t,
+                    onSelected: (s) => setState(() => _filterLocation = t),
+                  ),
+                )
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilteredKegList() {
+    List<Map<String, dynamic>> filtered = supabaseKegs.where((k) {
+      if (_filterTag != 'ALL' &&
+          !k['keg_code'].toString().startsWith(_filterTag))
+        return false;
+      if (_filterStatus != 'ALL' && k['status'] != _filterStatus) return false;
+      if (_filterLocation != 'ALL') {
+        String loc = k['location'] ?? '';
+        if (_filterLocation == 'TAP' && !loc.startsWith('TAP')) return false;
+        if (_filterLocation == '客先(外販)' && !externalLocs.contains(loc))
+          return false;
+        if (_filterLocation == '倉庫' && loc != '倉庫') return false;
+        if (_filterLocation == '冷蔵庫' && loc != '冷蔵庫') return false;
+      }
+      return true;
+    }).toList();
+
+    filtered.sort(
+      (a, b) => _extractKegNumber(
+        a['keg_code'],
+      ).compareTo(_extractKegNumber(b['keg_code'])),
+    );
+
+    if (filtered.isEmpty) {
+      return const Center(
+        child: Text('該当するケグがありません', style: TextStyle(color: Colors.grey)),
+      );
+    }
+
+    return ListView.separated(
+      itemCount: filtered.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (c, i) {
+        var k = filtered[i];
+        bool isSel = dataSelectedKegId == k['id'];
+
+        String batch = k['current_batch_id'] != null
+            ? ' (${k['current_batch_id']})'
+            : '';
+        String recipe = k['current_recipe'] != null
+            ? '${k['current_recipe']}$batch'
+            : '-';
+
+        return ListTile(
+          selected: isSel,
+          selectedTileColor: Colors.amber[50],
+          onTap: () => setState(() {
+            dataSelectedKegId = k['id'];
+            if (_lastSelectedKegId != k['id']) {
+              _kegMemoC.text = k['memo'] ?? '';
+              _lastSelectedKegId = k['id'];
+            }
+          }),
+          title: Text(
+            '${k['keg_code']} [${k['status']}]',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          subtitle: Text(
+            '場所: ${k['location'] ?? '倉庫'} \n液名: $recipe',
             style: const TextStyle(fontSize: 12),
           ),
-        ),
-        const Divider(),
-        Expanded(
-          child: ListView.builder(
-            itemCount: k.history.length,
-            itemBuilder: (c, i) {
-              var log = k.history[i];
-              bool isLatest = (i == 0);
-              return ListTile(
-                dense: true,
-                leading: Text(
-                  DateFormat('MM/dd HH:mm').format(log.timestamp),
-                  style: const TextStyle(fontSize: 10),
+          isThreeLine: true,
+          trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        );
+      },
+    );
+  }
+
+  Widget _buildKegDetailPane() {
+    var k = supabaseKegs.firstWhere(
+      (keg) => keg['id'] == dataSelectedKegId,
+      orElse: () => {},
+    );
+    if (k.isEmpty) return const SizedBox();
+
+    String batch = k['current_batch_id'] != null
+        ? ' (${k['current_batch_id']})'
+        : '';
+    String recipe = k['current_recipe'] != null
+        ? '${k['current_recipe']}$batch'
+        : '-';
+
+    return Padding(
+      padding: const EdgeInsets.all(24.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${k['keg_code']}  [${k['status']}]',
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900,
                 ),
-                title: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(2),
-                      color: Colors.black,
-                      child: Text(
-                        log.action,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 9,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    Expanded(
-                      child: Text(
-                        log.detail + (log.memo != null ? ' (${log.memo})' : ''),
-                        style: const TextStyle(fontSize: 11),
-                      ),
-                    ),
-                  ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
                 ),
-                trailing: isLatest
-                    ? IconButton(
-                        icon: const Icon(
-                          Icons.close,
-                          size: 14,
-                          color: Colors.red,
-                        ),
-                        onPressed: () => _undoLatestHistory(k),
-                      )
-                    : null,
-              );
-            },
+                decoration: BoxDecoration(
+                  color: Colors.blueGrey[50],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  k['location'] ?? '倉庫',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blueGrey,
+                  ),
+                ),
+              ),
+            ],
           ),
-        ),
-      ],
+          const SizedBox(height: 16),
+          Text(
+            '液名: $recipe',
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '洗浄回数: ${k['wash_count_since_acid'] ?? 0} 回',
+            style: const TextStyle(color: Colors.black54),
+          ),
+          const SizedBox(height: 16),
+          const Divider(thickness: 2),
+          const SizedBox(height: 8),
+
+          const Text(
+            '📝 メモ (Memo)',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _kegMemoC,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: 'タップの状態や返却予定などを入力...',
+                    isDense: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: () async {
+                  await _supabase
+                      .from('kegs')
+                      .update({'memo': _kegMemoC.text})
+                      .eq('id', k['id']);
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(const SnackBar(content: Text('メモを保存しました')));
+                  _loadData();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.black,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                child: const Text('SAVE'),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 16),
+          const Divider(thickness: 2),
+          const SizedBox(height: 8),
+          const Text(
+            '🕒 履歴 (History)',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+
+          Expanded(
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: _supabase
+                  .from('keg_logs')
+                  .select()
+                  .eq('keg_id', k['id'])
+                  .order('created_at', ascending: false),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData)
+                  return const Center(child: CircularProgressIndicator());
+                var logs = snapshot.data!;
+                if (logs.isEmpty)
+                  return const Center(
+                    child: Text(
+                      'まだ履歴がありません',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  );
+
+                return ListView.separated(
+                  itemCount: logs.length,
+                  separatorBuilder: (c, i) => const Divider(height: 1),
+                  itemBuilder: (c, i) {
+                    var log = logs[i];
+                    final dt = DateTime.parse(log['created_at']).toLocal();
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Text(
+                        '${dt.month}/${dt.day} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.blueGrey,
+                        ),
+                      ),
+                      title: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            color: Colors.black,
+                            child: Text(
+                              log['action'],
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              log['detail'] ?? '',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1185,7 +1549,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
       padding: const EdgeInsets.all(20),
       children: [
         const Text(
-          'KEG REGISTRATION',
+          'KEG REGISTRATION (クラウドへ登録)',
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
         const SizedBox(height: 10),
@@ -1204,7 +1568,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
             Expanded(
               child: TextField(
                 controller: _addKegCountController,
-                decoration: const InputDecoration(labelText: 'Qty'),
+                decoration: const InputDecoration(labelText: '追加本数 (Qty)'),
                 keyboardType: TextInputType.number,
               ),
             ),
@@ -1212,17 +1576,79 @@ class _KegManagerMainState extends State<KegManagerMain> {
             Expanded(
               child: TextField(
                 controller: _addKegSizeController,
-                decoration: const InputDecoration(labelText: 'Size L'),
+                decoration: const InputDecoration(
+                  labelText: 'サイズ (L)',
+                  hintText: '20',
+                ),
                 keyboardType: TextInputType.number,
               ),
             ),
-            ElevatedButton(onPressed: _addKegsBatch, child: const Text("ADD")),
+            ElevatedButton(
+              onPressed: () async {
+                int count = int.tryParse(_addKegCountController.text) ?? 0;
+                double capacity =
+                    double.tryParse(_addKegSizeController.text) ?? 20.0;
+                String size = "${capacity.toInt()}L";
+
+                if (count <= 0) return;
+                setState(() => _isLoading = true);
+
+                try {
+                  var currentTagKegs = supabaseKegs
+                      .where(
+                        (k) => k['keg_code'].toString().startsWith(
+                          registrationTag,
+                        ),
+                      )
+                      .toList();
+                  int startNum = 1;
+                  if (currentTagKegs.isNotEmpty) {
+                    List<int> nums = currentTagKegs
+                        .map((k) => _extractKegNumber(k['keg_code'].toString()))
+                        .toList();
+                    startNum = nums.reduce((a, b) => a > b ? a : b) + 1;
+                  }
+
+                  String initialStatus = registrationTag == 'O'
+                      ? 'CLEANED'
+                      : 'EMPTY';
+
+                  for (int i = 0; i < count; i++) {
+                    await _supabase.from('kegs').insert({
+                      'keg_code': '$registrationTag-${startNum + i}',
+                      'keg_type': size,
+                      'capacity': capacity,
+                      'status': initialStatus,
+                      'location': '倉庫',
+                    });
+                  }
+                  _addKegCountController.clear();
+                  await _loadData();
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('$count本のケグを登録しました')));
+                } catch (e) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('エラー: $e')));
+                  setState(() => _isLoading = false);
+                }
+              },
+              child: const Text("ADD KEGS"),
+            ),
           ],
         ),
-        const SizedBox(height: 20),
+
+        const Divider(height: 40),
         const Text(
-          'DELETE KEG',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+          'DELETE KEG (クラウドから削除)',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+            color: Colors.red,
+          ),
         ),
         const SizedBox(height: 10),
         Row(
@@ -1232,17 +1658,48 @@ class _KegManagerMainState extends State<KegManagerMain> {
             Expanded(
               child: TextField(
                 controller: _delKegIdController,
-                decoration: const InputDecoration(labelText: 'No.'),
+                decoration: const InputDecoration(labelText: '削除する番号 (例: 1)'),
                 keyboardType: TextInputType.number,
               ),
             ),
             ElevatedButton(
-              onPressed: _deleteKegByInput,
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red[100]),
-              child: const Text("DELETE"),
+              onPressed: () async {
+                int? num = int.tryParse(_delKegIdController.text);
+                if (num == null) return;
+                String targetCode = "$deletionTag-$num";
+
+                setState(() => _isLoading = true);
+                try {
+                  await _supabase
+                      .from('kegs')
+                      .delete()
+                      .eq('keg_code', targetCode);
+                  _delKegIdController.clear();
+                  await _loadData();
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('$targetCode を完全に削除しました')),
+                  );
+                } catch (e) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('削除エラー: $e')));
+                  setState(() => _isLoading = false);
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red[50]),
+              child: const Text(
+                "DELETE",
+                style: TextStyle(
+                  color: Colors.red,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ],
         ),
+
         const Divider(height: 40),
         const Text(
           'LOCATION & RULES',
@@ -1253,14 +1710,16 @@ class _KegManagerMainState extends State<KegManagerMain> {
             Expanded(
               child: TextField(
                 controller: _newLocController,
-                decoration: const InputDecoration(labelText: 'New Location'),
+                decoration: const InputDecoration(
+                  labelText: 'New Location (外販先など)',
+                ),
               ),
             ),
             ElevatedButton(
               onPressed: () {
                 if (_newLocController.text.isNotEmpty) {
                   setState(() => externalLocs.add(_newLocController.text));
-                  _saveData();
+                  _saveSettings();
                   _newLocController.clear();
                 }
               },
@@ -1276,22 +1735,11 @@ class _KegManagerMainState extends State<KegManagerMain> {
                   label: Text(l),
                   onDeleted: () {
                     setState(() => externalLocs.remove(l));
-                    _saveData();
+                    _saveSettings();
                   },
                 ),
               )
               .toList(),
-        ),
-        ListTile(
-          title: const Text('AC3 Threshold'),
-          subtitle: TextField(
-            controller: _ac3Controller,
-            keyboardType: TextInputType.number,
-            onSubmitted: (v) => setState(() {
-              ac3Threshold = int.parse(v);
-              _saveData();
-            }),
-          ),
         ),
       ],
     );
@@ -1322,41 +1770,6 @@ class _KegManagerMainState extends State<KegManagerMain> {
     );
   }
 
-  void _addKegsBatch() {
-    int count = int.tryParse(_addKegCountController.text) ?? 0;
-    String size = "${_addKegSizeController.text}L";
-    if (count <= 0) return;
-    setState(() {
-      var currentTagKegs = allKegs
-          .where((k) => k.tag == registrationTag)
-          .toList();
-      int startNum = currentTagKegs.isEmpty
-          ? 1
-          : currentTagKegs
-                    .map((k) => k.number)
-                    .reduce((a, b) => a > b ? a : b) +
-                1;
-      for (int i = 0; i < count; i++) {
-        allKegs.add(
-          Keg(tag: registrationTag, number: startNum + i, size: size),
-        );
-      }
-      _saveData();
-      _addKegCountController.clear();
-    });
-  }
-
-  void _deleteKegByInput() {
-    int? num = int.tryParse(_delKegIdController.text);
-    if (num == null) return;
-    String targetId = "$deletionTag-$num";
-    setState(() {
-      allKegs.removeWhere((k) => k.id == targetId);
-      _saveData();
-      _delKegIdController.clear();
-    });
-  }
-
   Widget _jobBtn(String l) {
     bool s = selectedJob == l;
     return Padding(
@@ -1369,7 +1782,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
         ),
         onPressed: () => setState(() {
           selectedJob = l;
-          selectedKegIds.clear();
+          selectedKegCodes.clear();
         }),
         child: Text(l, style: const TextStyle(fontSize: 11)),
       ),
@@ -1388,7 +1801,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
         if (isTap) {
           selectedTapSlot = l;
           selectedJob = 'TAP';
-          selectedKegIds.clear();
+          selectedKegCodes.clear();
         } else {
           selectedLocation = l;
         }

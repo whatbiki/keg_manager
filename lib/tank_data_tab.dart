@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:intl/intl.dart'; // 日付フォーマット用（必要に応じてpubspec.yamlに intl: ^0.19.0 等を追加してください）
+import 'package:fl_chart/fl_chart.dart';
 
 class TankDataTab extends StatefulWidget {
   const TankDataTab({super.key});
@@ -16,11 +16,15 @@ class _TankDataTabState extends State<TankDataTab> {
   bool _isLoading = true;
   bool _isLoadingDetails = false;
 
-  // --- アクティブなバッチと発酵記録のデータ ---
   Map<String, dynamic>? _activeBatch;
   List<Map<String, dynamic>> _fermentationLogs = [];
+  List<Map<String, dynamic>> _allMasterItems = [];
 
-  // --- 仕込み実績(batches)入力用のコントローラー ---
+  // --- 仕込み実績(batches) ---
+  final _startTimeC = TextEditingController();
+  String? _dbStartTimeStr;
+  final _initialTempC = TextEditingController();
+  final _initialPhC = TextEditingController();
   final _ogC = TextEditingController();
   final _fgC = TextEditingController();
   final _abvC = TextEditingController();
@@ -28,20 +32,58 @@ class _TankDataTabState extends State<TankDataTab> {
   final _spargeWaterC = TextEditingController();
   final _preBoilC = TextEditingController();
   final _postBoilC = TextEditingController();
+  final _fermenterVolC = TextEditingController();
 
-  // --- 発酵記録(fermentation_logs)入力用のコントローラー ---
+  // ★追加: 現在のバッチ用メモ
+  final _batchMemoC = TextEditingController();
+
+  // --- 発酵記録(fermentation_logs) ---
   final _logTempC = TextEditingController();
   final _logGravityC = TextEditingController();
+  final _logPhC = TextEditingController();
+  final _logDumpC = TextEditingController();
+
+  String _selectedAction = '計測・確認';
+  final List<String> _actionOptions = [
+    '計測・確認',
+    'ダンプ (Yeast/Trub)',
+    '添加 (Dry Hop/副原料)',
+    'その他',
+  ];
   final _logActionC = TextEditingController();
   final _logMemoC = TextEditingController();
+
+  String? _selectedCategory;
+  String? _selectedItem;
+  final _addedAmountC = TextEditingController();
+
+  final Map<String, String> _categories = {
+    'A': '副材料',
+    'C': '薬品',
+    'H': 'ホップ',
+    'M': '麦芽',
+    'N': '栄養剤',
+    'P': '資材',
+    'Y': '酵母',
+  };
 
   @override
   void initState() {
     super.initState();
+    _fetchAllMasterItems();
     _fetchData();
   }
 
-  // 1. タンクとレシピ一覧を取得する
+  Future<void> _fetchAllMasterItems() async {
+    final data = await _supabase
+        .from('item_master')
+        .select()
+        .order('category_code')
+        .order('name');
+    if (mounted)
+      setState(() => _allMasterItems = List<Map<String, dynamic>>.from(data));
+  }
+
   Future<void> _fetchData() async {
     setState(() => _isLoading = true);
     try {
@@ -55,7 +97,6 @@ class _TankDataTabState extends State<TankDataTab> {
         _selectedTankId = _tanks.first['id'];
       }
 
-      // タンク一覧が取れたら、選択中タンクの詳細(バッチ＆ログ)も取りに行く
       await _fetchTankDetails();
     } catch (e) {
       debugPrint('データ取得エラー: $e');
@@ -64,11 +105,10 @@ class _TankDataTabState extends State<TankDataTab> {
     }
   }
 
-  // 2. 選択されたタンクの「現在のバッチ情報」と「発酵ログ」を取得する
   Future<void> _fetchTankDetails() async {
     setState(() => _isLoadingDetails = true);
     try {
-      // 現在発酵中のバッチを探す
+      final currentTank = _tanks.firstWhere((t) => t['id'] == _selectedTankId);
       final batchData = await _supabase
           .from('batches')
           .select()
@@ -79,7 +119,15 @@ class _TankDataTabState extends State<TankDataTab> {
       if (batchData != null) {
         _activeBatch = batchData;
 
-        // 入力フォームに現在の値をセット
+        _dbStartTimeStr = currentTank['start_time'];
+        if (_dbStartTimeStr != null) {
+          final dt = DateTime.parse(_dbStartTimeStr!).toLocal();
+          _startTimeC.text =
+              '${dt.year}/${dt.month.toString().padLeft(2, '0')}/${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+        }
+
+        _initialTempC.text = batchData['initial_temp']?.toString() ?? '';
+        _initialPhC.text = batchData['initial_ph']?.toString() ?? '';
         _ogC.text = batchData['original_gravity']?.toString() ?? '';
         _fgC.text = batchData['final_gravity']?.toString() ?? '';
         _abvC.text = batchData['abv']?.toString() ?? '';
@@ -87,19 +135,21 @@ class _TankDataTabState extends State<TankDataTab> {
         _spargeWaterC.text = batchData['sparge_water_l']?.toString() ?? '';
         _preBoilC.text = batchData['pre_boil_vol_l']?.toString() ?? '';
         _postBoilC.text = batchData['post_boil_vol_l']?.toString() ?? '';
+        _fermenterVolC.text = batchData['fermenter_vol_l']?.toString() ?? '';
+        _batchMemoC.text = batchData['memo'] ?? ''; // ★追加: メモを読み込む
 
-        // 発酵ログの取得
         final logsData = await _supabase
             .from('fermentation_logs')
             .select()
             .eq('batch_id', batchData['id'])
-            .order('log_time', ascending: false); // 最新順
-
+            .order('log_time', ascending: false);
         _fermentationLogs = List<Map<String, dynamic>>.from(logsData);
       } else {
-        // 空のタンクの場合
         _activeBatch = null;
         _fermentationLogs = [];
+        _startTimeC.clear();
+        _initialTempC.clear();
+        _initialPhC.clear();
         _ogC.clear();
         _fgC.clear();
         _abvC.clear();
@@ -107,6 +157,8 @@ class _TankDataTabState extends State<TankDataTab> {
         _spargeWaterC.clear();
         _preBoilC.clear();
         _postBoilC.clear();
+        _fermenterVolC.clear();
+        _batchMemoC.clear(); // ★追加: 空ならメモもリセット
       }
     } catch (e) {
       debugPrint('詳細取得エラー: $e');
@@ -115,15 +167,81 @@ class _TankDataTabState extends State<TankDataTab> {
     }
   }
 
-  // ==========================================
-  // ★ 仕込み実績データ（batches）の更新処理
-  // ==========================================
+  Future<void> _pickStartTime() async {
+    DateTime initialDate = DateTime.now();
+    if (_dbStartTimeStr != null)
+      initialDate =
+          DateTime.tryParse(_dbStartTimeStr!)?.toLocal() ?? DateTime.now();
+
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+      builder: (context, child) => Theme(
+        data: ThemeData.light().copyWith(
+          colorScheme: const ColorScheme.light(primary: Colors.black),
+        ),
+        child: child!,
+      ),
+    );
+
+    if (pickedDate != null && mounted) {
+      final pickedTime = await showTimePicker(
+        context: context,
+        initialTime: TimeOfDay.fromDateTime(initialDate),
+        builder: (context, child) => Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: const ColorScheme.light(primary: Colors.black),
+          ),
+          child: child!,
+        ),
+      );
+      if (pickedTime != null) {
+        final finalDateTime = DateTime(
+          pickedDate.year,
+          pickedDate.month,
+          pickedDate.day,
+          pickedTime.hour,
+          pickedTime.minute,
+        );
+        setState(() {
+          _dbStartTimeStr = finalDateTime.toUtc().toIso8601String();
+          _startTimeC.text =
+              '${finalDateTime.year}/${finalDateTime.month.toString().padLeft(2, '0')}/${finalDateTime.day.toString().padLeft(2, '0')} ${finalDateTime.hour.toString().padLeft(2, '0')}:${finalDateTime.minute.toString().padLeft(2, '0')}';
+        });
+      }
+    }
+  }
+
+  // ★追加: メモだけを即座に保存する機能
+  Future<void> _updateBatchMemo() async {
+    if (_activeBatch == null) return;
+    try {
+      await _supabase
+          .from('batches')
+          .update({'memo': _batchMemoC.text})
+          .eq('id', _activeBatch!['id']);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('バッチメモを保存しました！')));
+      _fetchTankDetails();
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('エラー: $e')));
+    }
+  }
+
   Future<void> _updateBatchDetails() async {
     if (_activeBatch == null) return;
     try {
       await _supabase
           .from('batches')
           .update({
+            'initial_temp': double.tryParse(_initialTempC.text),
+            'initial_ph': double.tryParse(_initialPhC.text),
             'original_gravity': double.tryParse(_ogC.text),
             'final_gravity': double.tryParse(_fgC.text),
             'abv': double.tryParse(_abvC.text),
@@ -131,58 +249,81 @@ class _TankDataTabState extends State<TankDataTab> {
             'sparge_water_l': double.tryParse(_spargeWaterC.text),
             'pre_boil_vol_l': double.tryParse(_preBoilC.text),
             'post_boil_vol_l': double.tryParse(_postBoilC.text),
+            'fermenter_vol_l': double.tryParse(_fermenterVolC.text),
           })
           .eq('id', _activeBatch!['id']);
+
+      if (_dbStartTimeStr != null)
+        await _supabase
+            .from('tanks')
+            .update({'start_time': _dbStartTimeStr})
+            .eq('id', _selectedTankId);
 
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('仕込み実績データを更新しました！')));
-      _fetchTankDetails();
+      _fetchData();
     } catch (e) {
-      debugPrint('バッチ更新エラー: $e');
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('エラー: $e')));
     }
   }
 
-  // ==========================================
-  // ★ 日々の発酵記録（fermentation_logs）の追加処理
-  // ==========================================
   Future<void> _addFermentationLog() async {
     if (_activeBatch == null) return;
-    try {
-      await _supabase.from('fermentation_logs').insert({
-        'batch_id': _activeBatch!['id'],
-        'log_time': DateTime.now().toIso8601String(),
-        'temperature': double.tryParse(_logTempC.text),
-        'gravity': double.tryParse(_logGravityC.text),
-        'action': _logActionC.text,
-        'memo': _logMemoC.text,
-      });
+    double? addedAmount;
+    String? unit;
+    String actionText = _selectedAction;
 
-      // 入力欄をクリア
-      _logTempC.clear();
-      _logGravityC.clear();
-      _logActionC.clear();
-      _logMemoC.clear();
+    if (_selectedAction == '添加 (Dry Hop/副原料)') {
+      if (_selectedItem == null || _addedAmountC.text.isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('追加する材料と数量を入力してください')));
+        return;
+      }
+      addedAmount = double.tryParse(_addedAmountC.text);
+      if (addedAmount == null || addedAmount <= 0) return;
 
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('計測記録を追加しました！')));
-      _fetchTankDetails(); // ログリストを再取得
-    } catch (e) {
-      debugPrint('ログ追加エラー: $e');
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('エラー: $e')));
+      final masterRes = await _supabase
+          .from('item_master')
+          .select('name, unit')
+          .eq('id', _selectedItem!)
+          .maybeSingle();
+      final itemName = masterRes != null ? masterRes['name'] : '不明な材料';
+      unit = masterRes != null ? masterRes['unit'] : 'kg';
+
+      final txs = await _supabase
+          .from('inventory_transactions')
+          .select('transaction_type, amount')
+          .eq('item_id', _selectedItem!);
+      double currentStock = 0.0;
+      for (var tx in txs) {
+        final amt = (tx['amount'] as num).toDouble();
+        if (tx['transaction_type'] == 'IN')
+          currentStock += amt;
+        else
+          currentStock -= amt;
+      }
+      if (currentStock < addedAmount) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '⚠️ 在庫が足りません！\n$itemName の現在庫は ${currentStock.toStringAsFixed(1)} $unit です。',
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+      actionText = '添加: $itemName ($addedAmount $unit)';
+    } else if (_selectedAction == 'その他') {
+      actionText = _logActionC.text;
     }
-  }
 
-  // --- 仕込み開始処理（在庫ストッパー機能付き・前回と同じ） ---
-  Future<void> _startBrew(Map<String, dynamic> recipe) async {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -191,21 +332,88 @@ class _TankDataTabState extends State<TankDataTab> {
     );
 
     try {
+      await _supabase.from('fermentation_logs').insert({
+        'batch_id': _activeBatch!['id'],
+        'log_time': DateTime.now().toIso8601String(),
+        'temperature': double.tryParse(_logTempC.text),
+        'gravity': double.tryParse(_logGravityC.text),
+        'ph': double.tryParse(_logPhC.text),
+        'dumped_vol_l': double.tryParse(_logDumpC.text),
+        'action': actionText,
+        'memo': _logMemoC.text,
+      });
+
+      if (_selectedAction == '添加 (Dry Hop/副原料)') {
+        await _supabase.from('batch_ingredients').insert({
+          'batch_id': _activeBatch!['id'],
+          'item_id': _selectedItem,
+          'amount_used': addedAmount,
+        });
+        final currentTank = _tanks.firstWhere(
+          (t) => t['id'] == _selectedTankId,
+          orElse: () => {},
+        );
+        final customBatchId = currentTank['current_batch_id'] ?? 'N/A';
+        await _supabase.from('inventory_transactions').insert({
+          'item_id': _selectedItem,
+          'transaction_type': 'OUT',
+          'amount': addedAmount,
+          'unit': unit,
+          'price': 0,
+          'memo': 'TANK $_selectedTankId $customBatchId への追加投入',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+
+      _logTempC.clear();
+      _logGravityC.clear();
+      _logPhC.clear();
+      _logDumpC.clear();
+      _logActionC.clear();
+      _logMemoC.clear();
+      _addedAmountC.clear();
+      setState(() {
+        _selectedAction = '計測・確認';
+        _selectedCategory = null;
+        _selectedItem = null;
+      });
+
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('計測記録を追加しました！')));
+      _fetchTankDetails();
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('エラー: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _startBrew(Map<String, dynamic> recipe) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) =>
+          const Center(child: CircularProgressIndicator(color: Colors.white)),
+    );
+    try {
       final recipeId = recipe['id'];
       final recipeName = recipe['name'];
       final todayStr = DateTime.now().toIso8601String().split('T')[0];
-
       final recipeItems = await _supabase
           .from('recipe_items')
           .select()
           .eq('recipe_id', recipeId);
+
       List<String> shortageMessages = [];
       List<Map<String, dynamic>> validatedItems = [];
-
       for (var item in recipeItems) {
         final itemId = item['item_id'];
         final requiredAmount = (item['amount'] as num).toDouble();
-
         final masterRes = await _supabase
             .from('item_master')
             .select('name, unit')
@@ -213,7 +421,6 @@ class _TankDataTabState extends State<TankDataTab> {
             .maybeSingle();
         final itemName = masterRes != null ? masterRes['name'] : '不明な材料';
         final unit = masterRes != null ? masterRes['unit'] : 'kg';
-
         final txs = await _supabase
             .from('inventory_transactions')
             .select('transaction_type, amount')
@@ -226,11 +433,9 @@ class _TankDataTabState extends State<TankDataTab> {
           else
             currentStock -= amt;
         }
-
         if (currentStock < requiredAmount) {
-          final shortage = requiredAmount - currentStock;
           shortageMessages.add(
-            '・$itemName: ${shortage.toStringAsFixed(1)}$unit 不足\n   (現在庫: ${currentStock.toStringAsFixed(1)} / 必要: $requiredAmount)',
+            '・$itemName: ${(requiredAmount - currentStock).toStringAsFixed(1)}$unit 不足\n   (現在庫: ${currentStock.toStringAsFixed(1)} / 必要: $requiredAmount)',
           );
         } else {
           validatedItems.add({
@@ -283,9 +488,7 @@ class _TankDataTabState extends State<TankDataTab> {
           .from('batches')
           .select('id')
           .eq('recipe_id', recipeId);
-      final nextNum = countData.length + 1;
-      final customBatchNo = '${recipeName}_$nextNum';
-
+      final customBatchNo = '${recipeName}_${countData.length + 1}';
       final newBatch = await _supabase
           .from('batches')
           .insert({
@@ -297,7 +500,6 @@ class _TankDataTabState extends State<TankDataTab> {
           })
           .select()
           .single();
-
       final newBatchId = newBatch['id'];
 
       await _supabase
@@ -322,7 +524,7 @@ class _TankDataTabState extends State<TankDataTab> {
           'amount': item['amount'],
           'unit': item['unit'],
           'price': 0,
-          'memo': 'Batch $customBatchNo ($recipeName) の仕込みによる自動出庫',
+          'memo': 'TANK $_selectedTankId $customBatchNo の仕込みによる自動出庫',
           'created_at': DateTime.now().toIso8601String(),
         });
       }
@@ -334,7 +536,6 @@ class _TankDataTabState extends State<TankDataTab> {
       );
       _fetchData();
     } catch (e) {
-      debugPrint('仕込みエラー: $e');
       if (!mounted) return;
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -343,21 +544,168 @@ class _TankDataTabState extends State<TankDataTab> {
     }
   }
 
-  Widget _buildTargetBadge(String label, dynamic value) {
+  String _calculateElapsedTime(String? startTimeStr) {
+    if (startTimeStr == null) return 'N/A';
+    final startTime = DateTime.parse(startTimeStr).toLocal();
+    final duration = DateTime.now().difference(startTime);
+    final days = duration.inDays;
+    final hours = duration.inHours % 24;
+    return '${days}日 ${hours}時間';
+  }
+
+  String _formatDate(String? dateStr) {
+    if (dateStr == null) return 'N/A';
+    final dt = DateTime.parse(dateStr).toLocal();
+    return '${dt.year}/${dt.month.toString().padLeft(2, '0')}/${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  Widget _buildStatusItem(
+    String label,
+    String value, {
+    Color? valueColor,
+    String? subText,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.black54,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.w900,
+            color: valueColor ?? Colors.black87,
+          ),
+        ),
+        if (subText != null)
+          Text(
+            subText,
+            style: const TextStyle(fontSize: 11, color: Colors.black45),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildMiniBadge(String label, dynamic value) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: Colors.blueGrey[50],
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Colors.blueGrey[200]!),
+        color: Colors.grey[200],
+        borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
         '$label: ${value ?? '-'}',
         style: TextStyle(
-          fontSize: 14,
+          fontSize: 12,
           fontWeight: FontWeight.bold,
-          color: Colors.blueGrey[800],
+          color: Colors.grey[800],
         ),
+      ),
+    );
+  }
+
+  Widget _buildMiniChart(String title, List<FlSpot> spots, Color color) {
+    if (spots.isEmpty) return const SizedBox.shrink();
+
+    double minY = spots.map((s) => s.y).reduce((a, b) => a < b ? a : b);
+    double maxY = spots.map((s) => s.y).reduce((a, b) => a > b ? a : b);
+    if (minY == maxY) {
+      minY -= 1;
+      maxY += 1;
+    } else {
+      double pad = (maxY - minY) * 0.2;
+      minY -= pad;
+      maxY += pad;
+    }
+
+    return Container(
+      height: 120,
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: color,
+              fontSize: 14,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: LineChart(
+              LineChartData(
+                backgroundColor: Colors.grey[50],
+                minX: 0,
+                minY: minY,
+                maxY: maxY,
+                gridData: FlGridData(
+                  show: true,
+                  drawVerticalLine: true,
+                  drawHorizontalLine: true,
+                  getDrawingHorizontalLine: (value) =>
+                      FlLine(color: Colors.grey[200], strokeWidth: 1),
+                  getDrawingVerticalLine: (value) =>
+                      FlLine(color: Colors.grey[200], strokeWidth: 1),
+                ),
+                titlesData: FlTitlesData(
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 22,
+                      getTitlesWidget: (val, meta) => Text(
+                        '${val.toInt()}日',
+                        style: const TextStyle(fontSize: 10),
+                      ),
+                    ),
+                  ),
+                  leftTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 40,
+                      getTitlesWidget: (val, meta) => Text(
+                        val.toStringAsFixed(title.contains('SG') ? 3 : 1),
+                        style: const TextStyle(fontSize: 10),
+                      ),
+                    ),
+                  ),
+                  topTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                  rightTitles: const AxisTitles(
+                    sideTitles: SideTitles(showTitles: false),
+                  ),
+                ),
+                borderData: FlBorderData(
+                  show: true,
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                lineBarsData: [
+                  LineChartBarData(
+                    spots: spots,
+                    isCurved: true,
+                    color: color,
+                    barWidth: 2.5,
+                    isStrokeCapRound: true,
+                    dotData: const FlDotData(show: true),
+                    belowBarData: BarAreaData(
+                      show: true,
+                      color: color.withOpacity(0.15),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -375,6 +723,7 @@ class _TankDataTabState extends State<TankDataTab> {
         'id': _selectedTankId,
         'current_recipe': null,
         'current_batch_id': null,
+        'start_time': null,
       },
     );
     final String? rawRecipeName = currentTank['current_recipe'];
@@ -390,6 +739,69 @@ class _TankDataTabState extends State<TankDataTab> {
         (r) => r['name'] == rawRecipeName,
         orElse: () => <String, dynamic>{},
       );
+    }
+
+    double totalDumped = 0.0;
+    for (var log in _fermentationLogs) {
+      totalDumped += (log['dumped_vol_l'] ?? 0.0) as num;
+    }
+    final fermenterVol = double.tryParse(_fermenterVolC.text) ?? 0.0;
+    final currentVolume = fermenterVol - totalDumped;
+
+    String currentTemp = '-';
+    String currentSg = '-';
+    String currentPh = '-';
+
+    if (_fermentationLogs.isNotEmpty) {
+      currentTemp = _fermentationLogs.first['temperature']?.toString() ?? '-';
+      currentSg = _fermentationLogs.first['gravity']?.toString() ?? '-';
+      currentPh = _fermentationLogs.first['ph']?.toString() ?? '-';
+    } else if (_activeBatch != null) {
+      currentTemp = _activeBatch!['initial_temp']?.toString() ?? '-';
+      currentSg = _activeBatch!['original_gravity']?.toString() ?? '-';
+      currentPh = _activeBatch!['initial_ph']?.toString() ?? '-';
+    }
+
+    bool showDumpInput =
+        _selectedAction == '計測・確認' || _selectedAction == 'ダンプ (Yeast/Trub)';
+
+    List<FlSpot> sgSpots = [];
+    List<FlSpot> tempSpots = [];
+    List<FlSpot> phSpots = [];
+
+    DateTime? graphStartTime = _dbStartTimeStr != null
+        ? DateTime.tryParse(_dbStartTimeStr!)?.toLocal()
+        : null;
+
+    if (graphStartTime != null && !isEmptyTank) {
+      if (_activeBatch!['original_gravity'] != null)
+        sgSpots.add(
+          FlSpot(0, (_activeBatch!['original_gravity'] as num).toDouble()),
+        );
+      if (_activeBatch!['initial_temp'] != null)
+        tempSpots.add(
+          FlSpot(0, (_activeBatch!['initial_temp'] as num).toDouble()),
+        );
+      if (_activeBatch!['initial_ph'] != null)
+        phSpots.add(FlSpot(0, (_activeBatch!['initial_ph'] as num).toDouble()));
+
+      final sortedLogs = List<Map<String, dynamic>>.from(_fermentationLogs)
+        ..sort((a, b) => a['log_time'].compareTo(b['log_time']));
+
+      for (var log in sortedLogs) {
+        final logTime = DateTime.parse(log['log_time']).toLocal();
+        final double days =
+            logTime.difference(graphStartTime).inMinutes / (60.0 * 24.0);
+
+        if (days >= 0) {
+          if (log['gravity'] != null)
+            sgSpots.add(FlSpot(days, (log['gravity'] as num).toDouble()));
+          if (log['temperature'] != null)
+            tempSpots.add(FlSpot(days, (log['temperature'] as num).toDouble()));
+          if (log['ph'] != null)
+            phSpots.add(FlSpot(days, (log['ph'] as num).toDouble()));
+        }
+      }
     }
 
     return Row(
@@ -417,7 +829,7 @@ class _TankDataTabState extends State<TankDataTab> {
                     return GestureDetector(
                       onTap: () {
                         setState(() => _selectedTankId = t['id']);
-                        _fetchTankDetails(); // タップした瞬間に詳細を取り直す
+                        _fetchData();
                       },
                       child: Container(
                         height: 100,
@@ -453,7 +865,7 @@ class _TankDataTabState extends State<TankDataTab> {
                 ),
         ),
 
-        // --- 右側: 詳細・レシピ登録 ---
+        // --- 右側: 詳細エリア ---
         Expanded(
           child: Container(
             color: Colors.white,
@@ -509,58 +921,260 @@ class _TankDataTabState extends State<TankDataTab> {
                     child: Center(child: CircularProgressIndicator()),
                   ),
                 ] else ...[
-                  // タンク使用中の場合（スクロール可能な詳細エリア）
                   Expanded(
                     child: SingleChildScrollView(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // 1. ヘッダーとTarget情報
-                          Text(
-                            rawRecipeName!,
-                            style: const TextStyle(
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
+                          Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              color: Colors.grey[50],
+                              border: Border.all(color: Colors.grey[300]!),
+                              borderRadius: BorderRadius.circular(12),
                             ),
-                          ),
-                          Text(
-                            'Batch No: ${currentTank['current_batch_id'] ?? 'N/A'}',
-                            style: const TextStyle(
-                              color: Colors.black54,
-                              fontSize: 16,
-                            ),
-                          ),
-                          if (activeRecipeData != null &&
-                              activeRecipeData.isNotEmpty) ...[
-                            const SizedBox(height: 16),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                _buildTargetBadge(
-                                  'Target OG',
-                                  activeRecipeData['target_og'],
+                                Expanded(
+                                  flex: 2,
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        rawRecipeName!,
+                                        style: const TextStyle(
+                                          fontSize: 36,
+                                          fontWeight: FontWeight.w900,
+                                          height: 1.1,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 4,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black87,
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          'Batch: ${currentTank['current_batch_id'] ?? 'N/A'}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                _buildTargetBadge(
-                                  'Target FG',
-                                  activeRecipeData['target_fg'],
-                                ),
-                                _buildTargetBadge(
-                                  'ABV',
-                                  '${activeRecipeData['target_abv'] ?? '-'}%',
-                                ),
-                                _buildTargetBadge(
-                                  'IBU',
-                                  activeRecipeData['target_ibu'],
+                                Expanded(
+                                  flex: 3,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Wrap(
+                                        alignment: WrapAlignment.end,
+                                        spacing: 24,
+                                        runSpacing: 16,
+                                        children: [
+                                          _buildStatusItem(
+                                            'BREWED ON',
+                                            _formatDate(
+                                              currentTank['start_time'],
+                                            ),
+                                          ),
+                                          _buildStatusItem(
+                                            'TIME IN TANK',
+                                            _calculateElapsedTime(
+                                              currentTank['start_time'],
+                                            ),
+                                            valueColor: Colors.blue[700],
+                                          ),
+                                          _buildStatusItem(
+                                            'CURRENT VOL',
+                                            '${currentVolume.toStringAsFixed(1)} L',
+                                            valueColor: Colors.green[700],
+                                            subText:
+                                                'IN $fermenterVol L - DUMP $totalDumped L',
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Wrap(
+                                        alignment: WrapAlignment.end,
+                                        spacing: 24,
+                                        runSpacing: 16,
+                                        children: [
+                                          _buildStatusItem(
+                                            'CURRENT TEMP',
+                                            '$currentTemp°C',
+                                            valueColor: Colors.orange[800],
+                                          ),
+                                          _buildStatusItem(
+                                            'CURRENT SG',
+                                            currentSg,
+                                            valueColor: Colors.purple[800],
+                                          ),
+                                          _buildStatusItem(
+                                            'CURRENT pH',
+                                            currentPh,
+                                            valueColor: Colors.teal[800],
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 16),
+                                      if (activeRecipeData != null &&
+                                          activeRecipeData.isNotEmpty)
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: [
+                                            _buildMiniBadge(
+                                              'Target OG',
+                                              activeRecipeData['target_og'],
+                                            ),
+                                            _buildMiniBadge(
+                                              'Target FG',
+                                              activeRecipeData['target_fg'],
+                                            ),
+                                            _buildMiniBadge(
+                                              'ABV',
+                                              '${activeRecipeData['target_abv'] ?? '-'}%',
+                                            ),
+                                            _buildMiniBadge(
+                                              'IBU',
+                                              activeRecipeData['target_ibu'],
+                                            ),
+                                          ],
+                                        ),
+                                    ],
+                                  ),
                                 ),
                               ],
                             ),
-                          ],
+                          ),
                           const SizedBox(height: 24),
 
-                          // 2. 実測値(batches)の入力フォーム
+                          // ==========================================
+                          // ★ 追加: 現在のバッチ・メモ欄
+                          // ==========================================
+                          const Text(
+                            '📝 バッチ・メモ (テイスティングノート・特記事項)',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: _batchMemoC,
+                                  maxLines: 3,
+                                  decoration: InputDecoration(
+                                    hintText:
+                                        '発酵のスピードやドライホップの香り、反省点などを自由に入力...',
+                                    border: const OutlineInputBorder(),
+                                    fillColor: Colors.grey[50],
+                                    filled: true,
+                                    isDense: true,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              ElevatedButton(
+                                onPressed: _updateBatchMemo,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.black,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 24,
+                                    vertical: 30,
+                                  ),
+                                ),
+                                child: const Text(
+                                  'SAVE',
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 24),
+
+                          if (sgSpots.length >= 2 ||
+                              tempSpots.length >= 2 ||
+                              phSpots.length >= 2) ...[
+                            Card(
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                side: BorderSide(color: Colors.grey[300]!),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.all(16.0),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      '📈 Fermentation Charts (発酵曲線グラフ)',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const Divider(),
+                                    const SizedBox(height: 8),
+                                    _buildMiniChart(
+                                      'Gravity (比重 SG)',
+                                      sgSpots,
+                                      Colors.purple[700]!,
+                                    ),
+                                    _buildMiniChart(
+                                      'Temperature (液温 °C)',
+                                      tempSpots,
+                                      Colors.orange[700]!,
+                                    ),
+                                    _buildMiniChart(
+                                      'pH',
+                                      phSpots,
+                                      Colors.teal[700]!,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                          ] else ...[
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.blue[50],
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text(
+                                'ℹ️ データが2回以上入力されると、ここに発酵曲線グラフが表示されます。',
+                                style: TextStyle(color: Colors.blue),
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                          ],
+
                           Card(
-                            elevation: 2,
+                            elevation: 0,
+                            color: Colors.grey[50],
+                            shape: RoundedRectangleBorder(
+                              side: BorderSide(color: Colors.grey[300]!),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
                             child: Padding(
                               padding: const EdgeInsets.all(16.0),
                               child: Column(
@@ -571,20 +1185,24 @@ class _TankDataTabState extends State<TankDataTab> {
                                         MainAxisAlignment.spaceBetween,
                                     children: [
                                       const Text(
-                                        '📊 仕込み実績データ (Batches Update)',
+                                        '📊 Batches Update (仕込み実績)',
                                         style: TextStyle(
-                                          fontSize: 18,
+                                          fontSize: 16,
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
                                       ElevatedButton(
                                         onPressed: _updateBatchDetails,
                                         style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.blueGrey[800],
+                                          backgroundColor: Colors.black87,
+                                          minimumSize: const Size(100, 36),
                                         ),
                                         child: const Text(
                                           'UPDATE',
-                                          style: TextStyle(color: Colors.white),
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                          ),
                                         ),
                                       ),
                                     ],
@@ -592,6 +1210,50 @@ class _TankDataTabState extends State<TankDataTab> {
                                   const Divider(),
                                   Row(
                                     children: [
+                                      Expanded(
+                                        flex: 2,
+                                        child: InkWell(
+                                          onTap: _pickStartTime,
+                                          child: InputDecorator(
+                                            decoration: const InputDecoration(
+                                              labelText: 'タンク投入日時',
+                                              border: UnderlineInputBorder(),
+                                            ),
+                                            child: Text(
+                                              _startTimeC.text.isNotEmpty
+                                                  ? _startTimeC.text
+                                                  : '日時を選択',
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: TextField(
+                                          controller: _initialTempC,
+                                          decoration: const InputDecoration(
+                                            labelText: '最初の液温 (°C)',
+                                          ),
+                                          keyboardType:
+                                              const TextInputType.numberWithOptions(
+                                                decimal: true,
+                                              ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: TextField(
+                                          controller: _initialPhC,
+                                          decoration: const InputDecoration(
+                                            labelText: '最初のpH',
+                                          ),
+                                          keyboardType:
+                                              const TextInputType.numberWithOptions(
+                                                decimal: true,
+                                              ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
                                       Expanded(
                                         child: TextField(
                                           controller: _ogC,
@@ -617,7 +1279,11 @@ class _TankDataTabState extends State<TankDataTab> {
                                               ),
                                         ),
                                       ),
-                                      const SizedBox(width: 8),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
                                       Expanded(
                                         child: TextField(
                                           controller: _abvC,
@@ -630,11 +1296,7 @@ class _TankDataTabState extends State<TankDataTab> {
                                               ),
                                         ),
                                       ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    children: [
+                                      const SizedBox(width: 8),
                                       Expanded(
                                         child: TextField(
                                           controller: _mashWaterC,
@@ -686,31 +1348,49 @@ class _TankDataTabState extends State<TankDataTab> {
                                               ),
                                         ),
                                       ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: TextField(
+                                          controller: _fermenterVolC,
+                                          decoration: const InputDecoration(
+                                            labelText: 'タンク投入量 (L)',
+                                          ),
+                                          keyboardType:
+                                              const TextInputType.numberWithOptions(
+                                                decimal: true,
+                                              ),
+                                        ),
+                                      ),
                                     ],
                                   ),
                                 ],
                               ),
                             ),
                           ),
-                          const SizedBox(height: 24),
+                          const SizedBox(height: 16),
 
-                          // 3. 発酵記録(fermentation_logs)の追加と履歴
                           Card(
-                            elevation: 2,
+                            elevation: 0,
+                            color: Colors.grey[50],
+                            shape: RoundedRectangleBorder(
+                              side: BorderSide(color: Colors.grey[300]!),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
                             child: Padding(
                               padding: const EdgeInsets.all(16.0),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   const Text(
-                                    '📝 日々の計測・作業記録 (Fermentation Logs)',
+                                    '📝 Fermentation Logs (日々の計測・作業)',
                                     style: TextStyle(
-                                      fontSize: 18,
+                                      fontSize: 16,
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                   const Divider(),
                                   Row(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
                                     children: [
                                       Expanded(
                                         child: TextField(
@@ -740,35 +1420,250 @@ class _TankDataTabState extends State<TankDataTab> {
                                       const SizedBox(width: 8),
                                       Expanded(
                                         child: TextField(
-                                          controller: _logActionC,
+                                          controller: _logPhC,
                                           decoration: const InputDecoration(
-                                            labelText: 'Action (Dry Hop等)',
+                                            labelText: 'pH',
                                           ),
+                                          keyboardType:
+                                              const TextInputType.numberWithOptions(
+                                                decimal: true,
+                                              ),
                                         ),
                                       ),
                                       const SizedBox(width: 8),
+                                      if (showDumpInput)
+                                        Expanded(
+                                          child: TextField(
+                                            controller: _logDumpC,
+                                            decoration: const InputDecoration(
+                                              labelText: 'Dump Vol (L)',
+                                              hintText: '0.2',
+                                            ),
+                                            keyboardType:
+                                                const TextInputType.numberWithOptions(
+                                                  decimal: true,
+                                                ),
+                                          ),
+                                        )
+                                      else
+                                        const Spacer(),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
                                       Expanded(
                                         flex: 2,
-                                        child: TextField(
-                                          controller: _logMemoC,
+                                        child: DropdownButtonFormField<String>(
+                                          value: _selectedAction,
                                           decoration: const InputDecoration(
-                                            labelText: 'Memo (風味など)',
+                                            labelText: 'Action (作業内容)',
+                                          ),
+                                          items: _actionOptions
+                                              .map(
+                                                (a) => DropdownMenuItem(
+                                                  value: a,
+                                                  child: Text(a),
+                                                ),
+                                              )
+                                              .toList(),
+                                          onChanged: (v) => setState(
+                                            () => _selectedAction = v!,
                                           ),
                                         ),
                                       ),
                                       const SizedBox(width: 8),
-                                      ElevatedButton.icon(
+                                      if (_selectedAction == 'その他')
+                                        Expanded(
+                                          flex: 3,
+                                          child: TextField(
+                                            controller: _logActionC,
+                                            decoration: const InputDecoration(
+                                              labelText: '内容を入力',
+                                            ),
+                                          ),
+                                        )
+                                      else
+                                        Expanded(
+                                          flex: 3,
+                                          child: TextField(
+                                            controller: _logMemoC,
+                                            decoration: const InputDecoration(
+                                              labelText: 'Memo (風味・コメント)',
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+
+                                  if (_selectedAction ==
+                                      '添加 (Dry Hop/副原料)') ...[
+                                    const SizedBox(height: 12),
+                                    Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.blueGrey[50],
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.blueGrey[200]!,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.inventory,
+                                            color: Colors.blueGrey,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child:
+                                                DropdownButtonFormField<String>(
+                                                  value: _selectedCategory,
+                                                  decoration:
+                                                      const InputDecoration(
+                                                        labelText: 'カテゴリ',
+                                                        border:
+                                                            InputBorder.none,
+                                                        isDense: true,
+                                                      ),
+                                                  items: _categories.entries
+                                                      .map(
+                                                        (e) => DropdownMenuItem(
+                                                          value: e.key,
+                                                          child: Text(e.value),
+                                                        ),
+                                                      )
+                                                      .toList(),
+                                                  onChanged: (v) =>
+                                                      setState(() {
+                                                        _selectedCategory = v;
+                                                        _selectedItem = null;
+                                                      }),
+                                                ),
+                                          ),
+                                          Container(
+                                            width: 1,
+                                            height: 40,
+                                            color: Colors.blueGrey[200],
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            flex: 2,
+                                            child: DropdownButtonFormField<String>(
+                                              value: _selectedItem,
+                                              decoration: const InputDecoration(
+                                                labelText:
+                                                    '材料 (Inventoryから引かれます)',
+                                                border: InputBorder.none,
+                                                isDense: true,
+                                              ),
+                                              items: _allMasterItems
+                                                  .where(
+                                                    (m) =>
+                                                        m['category_code'] ==
+                                                        _selectedCategory,
+                                                  )
+                                                  .map(
+                                                    (m) =>
+                                                        DropdownMenuItem<
+                                                          String
+                                                        >(
+                                                          value: m['id']
+                                                              .toString(),
+                                                          child: Text(
+                                                            m['name'],
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                          ),
+                                                        ),
+                                                  )
+                                                  .toList(),
+                                              onChanged: (v) => setState(
+                                                () => _selectedItem = v,
+                                              ),
+                                            ),
+                                          ),
+                                          Container(
+                                            width: 1,
+                                            height: 40,
+                                            color: Colors.blueGrey[200],
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: TextField(
+                                              controller: _addedAmountC,
+                                              decoration: const InputDecoration(
+                                                labelText: '添加量 (kg, L等)',
+                                                border: InputBorder.none,
+                                                isDense: true,
+                                              ),
+                                              keyboardType:
+                                                  const TextInputType.numberWithOptions(
+                                                    decimal: true,
+                                                  ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+
+                                  const SizedBox(height: 12),
+                                  if (_selectedAction == 'その他')
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: TextField(
+                                            controller: _logMemoC,
+                                            decoration: const InputDecoration(
+                                              labelText: 'Memo (風味・コメント)',
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        ElevatedButton.icon(
+                                          onPressed: _addFermentationLog,
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.amber[600],
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 18,
+                                              horizontal: 24,
+                                            ),
+                                          ),
+                                          icon: const Icon(
+                                            Icons.add,
+                                            color: Colors.white,
+                                            size: 20,
+                                          ),
+                                          label: const Text(
+                                            'ADD LOG',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  else
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: ElevatedButton.icon(
                                         onPressed: _addFermentationLog,
                                         style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.amber[700],
+                                          backgroundColor: Colors.amber[600],
                                           padding: const EdgeInsets.symmetric(
-                                            vertical: 16,
-                                            horizontal: 16,
+                                            vertical: 18,
+                                            horizontal: 32,
                                           ),
                                         ),
                                         icon: const Icon(
                                           Icons.add,
                                           color: Colors.white,
+                                          size: 20,
                                         ),
                                         label: const Text(
                                           'ADD LOG',
@@ -778,10 +1673,9 @@ class _TankDataTabState extends State<TankDataTab> {
                                           ),
                                         ),
                                       ),
-                                    ],
-                                  ),
+                                    ),
                                   const SizedBox(height: 16),
-                                  // 履歴リスト
+
                                   _fermentationLogs.isEmpty
                                       ? const Padding(
                                           padding: EdgeInsets.all(16.0),
@@ -794,32 +1688,44 @@ class _TankDataTabState extends State<TankDataTab> {
                                             ),
                                           ),
                                         )
-                                      : ListView.builder(
-                                          shrinkWrap:
-                                              true, // Cardの中でListViewを使うおまじない
+                                      : ListView.separated(
+                                          shrinkWrap: true,
                                           physics:
-                                              const NeverScrollableScrollPhysics(), // スクロールは親に任せる
+                                              const NeverScrollableScrollPhysics(),
                                           itemCount: _fermentationLogs.length,
+                                          separatorBuilder: (context, index) =>
+                                              const Divider(height: 1),
                                           itemBuilder: (context, index) {
                                             final log =
                                                 _fermentationLogs[index];
-                                            // 日付を見やすくフォーマット (例: 2026-05-07 10:30)
-                                            final DateTime dt = DateTime.parse(
+                                            final dt = DateTime.parse(
                                               log['log_time'],
                                             ).toLocal();
-                                            final String formattedDate =
-                                                '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+                                            final formattedDate =
+                                                '${dt.month.toString().padLeft(2, '0')}/${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
                                             return ListTile(
+                                              contentPadding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 8,
+                                                    vertical: 0,
+                                                  ),
                                               leading: const Icon(
-                                                Icons.history,
+                                                Icons.timeline,
                                                 color: Colors.blueGrey,
                                               ),
                                               title: Text(
-                                                'Temp: ${log['temperature'] ?? '-'}°C  |  SG: ${log['gravity'] ?? '-'}',
+                                                'Temp: ${log['temperature'] ?? '-'}°C   |   SG: ${log['gravity'] ?? '-'}   |   pH: ${log['ph'] ?? '-'}   |   Dump: ${log['dumped_vol_l'] ?? 0} L',
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 14,
+                                                ),
                                               ),
                                               subtitle: Text(
-                                                '$formattedDate  ${log['action'] != null ? ' | Action: ${log['action']}' : ''} ${log['memo'] != null ? ' | ${log['memo']}' : ''}',
+                                                '$formattedDate   ${log['action'] != null && log['action'] != '' ? '▶ ${log['action']}' : ''}   ${log['memo'] != null ? log['memo'] : ''}',
+                                                style: const TextStyle(
+                                                  fontSize: 12,
+                                                ),
                                               ),
                                             );
                                           },
@@ -833,12 +1739,11 @@ class _TankDataTabState extends State<TankDataTab> {
                     ),
                   ),
 
-                  // 終了ボタン（最下部に固定）
                   const SizedBox(height: 16),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
+                  OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
                       minimumSize: const Size.fromHeight(50),
                     ),
                     onPressed: () async {
@@ -881,11 +1786,8 @@ class _TankDataTabState extends State<TankDataTab> {
                       }
                     },
                     child: const Text(
-                      'Empty Tank (終了)',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
+                      'EMPTY TANK (タンクを空にして終了)',
+                      style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
