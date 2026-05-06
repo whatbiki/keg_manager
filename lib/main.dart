@@ -8,6 +8,8 @@ import 'tank_data_tab.dart';
 import 'recipe_master_tab.dart';
 import 'inventory_tab.dart';
 import 'history_tab.dart';
+import 'tax_tab.dart';
+import 'login_screen.dart'; // ★ログイン画面をインポート！
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,10 +33,46 @@ class MyApp extends StatelessWidget {
           primary: Colors.black,
         ),
       ),
-      home: const KegManagerMain(),
+      home: const AuthGate(), // ★入り口を「改札（AuthGate）」に変更！
     );
   }
 }
+
+// ==========================================
+// ★ ログイン状態を監視する改札口
+// ==========================================
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  @override
+  void initState() {
+    super.initState();
+    // ログイン・ログアウトの状態変化を常に監視する
+    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 現在のセッション（ログイン情報）を取得
+    final session = Supabase.instance.client.auth.currentSession;
+
+    // セッションが空ならログイン画面へ、あればメイン画面へ
+    if (session == null) {
+      return const LoginScreen();
+    } else {
+      return const KegManagerMain();
+    }
+  }
+}
+// ==========================================
+// 以下、既存のメイン画面
+// ==========================================
 
 class KegManagerMain extends StatefulWidget {
   const KegManagerMain({super.key});
@@ -688,6 +726,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
               'DATA',
               'SET',
               'INVENTORY',
+              'TAX',
             ].map((t) => _tabNav(t)).toList(),
           ),
         ],
@@ -711,6 +750,7 @@ class _KegManagerMainState extends State<KegManagerMain> {
     if (selectedTab == 'DATA') return _buildDataTabWrapper();
     if (selectedTab == 'SET') return _buildSetWrapper();
     if (selectedTab == 'INVENTORY') return const InventoryTab();
+    if (selectedTab == 'TAX') return const TaxTab();
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
       child: _buildJobTab(),
