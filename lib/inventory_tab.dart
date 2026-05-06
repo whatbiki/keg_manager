@@ -16,14 +16,19 @@ class _InventoryTabState extends State<InventoryTab> {
   Map<String, dynamic>? _selectedItem;
 
   // ==========================================
-  // フォーム用の変数
+  // フォーム・計算用の変数
   // ==========================================
   String _txType = 'IN';
-  final _qtyController = TextEditingController(); // 数量 (amount)
-  final _priceController = TextEditingController(); // 価格 (price)
-  final _memoController = TextEditingController(); // メモ (memo)
+  DateTime _selectedDate = DateTime.now(); // ★ 追加: 選択された日付
+  final _qtyController = TextEditingController();
+  final _priceController = TextEditingController();
+  final _memoController = TextEditingController();
   int? _selectedSupplierId;
   List<Map<String, dynamic>> _suppliersList = [];
+
+  List<Map<String, dynamic>> _transactions = [];
+  double _currentStock = 0.0;
+  bool _loadingTx = false;
 
   final Map<String, String> categories = {
     'A': '副材料',
@@ -42,7 +47,6 @@ class _InventoryTabState extends State<InventoryTab> {
     _fetchSuppliersMain();
   }
 
-  // 仕入先リストの取得
   Future<void> _fetchSuppliersMain() async {
     final data = await _supabase.from('suppliers').select().order('id');
     if (mounted) {
@@ -52,7 +56,6 @@ class _InventoryTabState extends State<InventoryTab> {
     }
   }
 
-  // アイテムリストの取得
   Future<void> _fetch() async {
     setState(() => _loading = true);
     final data = await _supabase
@@ -68,9 +71,61 @@ class _InventoryTabState extends State<InventoryTab> {
     }
   }
 
-  // ==========================================
-  // 通帳に記録（入出庫の保存）
-  // ==========================================
+  // ★ 追加: カレンダーで日付を選ぶメソッド
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2020), // 過去はこの年から
+      lastDate: DateTime(2100), // 未来はこの年まで
+    );
+    if (picked != null) {
+      setState(() {
+        // 並び順がおかしくならないよう、時間は「入力した時の現在時刻」を維持します
+        final now = DateTime.now();
+        _selectedDate = DateTime(
+          picked.year,
+          picked.month,
+          picked.day,
+          now.hour,
+          now.minute,
+          now.second,
+        );
+      });
+    }
+  }
+
+  Future<void> _fetchTransactions(String itemId) async {
+    setState(() => _loadingTx = true);
+    try {
+      final data = await _supabase
+          .from('inventory_transactions')
+          .select()
+          .eq('item_id', itemId)
+          .order('created_at', ascending: false);
+
+      double stock = 0.0;
+      for (var tx in data) {
+        final amount = (tx['amount'] as num).toDouble();
+        if (tx['transaction_type'] == 'IN') {
+          stock += amount;
+        } else {
+          stock -= amount;
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _transactions = List<Map<String, dynamic>>.from(data);
+        _currentStock = stock;
+        _loadingTx = false;
+      });
+    } catch (e) {
+      debugPrint('履歴取得エラー: $e');
+      if (mounted) setState(() => _loadingTx = false);
+    }
+  }
+
   Future<void> _saveTransaction() async {
     if (_qtyController.text.isEmpty) return;
 
@@ -88,23 +143,24 @@ class _InventoryTabState extends State<InventoryTab> {
         'price': price,
         'memo': _memoController.text,
         'supplier_id': _txType == 'IN' ? _selectedSupplierId : null,
+        'created_at': _selectedDate.toIso8601String(), // ★ 追加: 指定した日付を保存！
       });
 
       if (!mounted) return;
 
-      // 保存成功したら入力欄を空にする
       _qtyController.clear();
       _priceController.clear();
       _memoController.clear();
       setState(() {
         _selectedSupplierId = null;
+        _selectedDate = DateTime.now(); // 保存したら「今日」にリセットする
       });
 
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('通帳に記録しました！')));
 
-      // TODO: ここで履歴リストと総在庫量を再取得する処理を後で追加
+      _fetchTransactions(_selectedItem!['id']);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -113,14 +169,9 @@ class _InventoryTabState extends State<InventoryTab> {
     }
   }
 
-  // ==========================================
-  // 新規アイテム登録ダイアログ
-  // ==========================================
   void _showAddDialog() {
     final nameC = TextEditingController();
     String selCat = 'M';
-
-    // ★ 追加1: 単位の初期値と、選択肢のリストを作ります
     String selUnit = 'kg';
     final List<String> unitOptions = ['kg', 'g', 'L', 'ml', '個', 'pack'];
 
@@ -133,9 +184,8 @@ class _InventoryTabState extends State<InventoryTab> {
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
           content: Column(
-            mainAxisSize: MainAxisSize.min, // 中身に合わせて高さを縮める
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // カテゴリ選択
               DropdownButtonFormField<String>(
                 value: selCat,
                 items: categories.entries
@@ -149,15 +199,11 @@ class _InventoryTabState extends State<InventoryTab> {
                 onChanged: (v) => setD(() => selCat = v!),
                 decoration: const InputDecoration(labelText: 'カテゴリ'),
               ),
-
-              // 材料名入力
               TextField(
                 controller: nameC,
                 decoration: const InputDecoration(labelText: '材料名'),
               ),
               const SizedBox(height: 8),
-
-              // ★ 追加2: 単位を選ぶドロップダウンを追加
               DropdownButtonFormField<String>(
                 value: selUnit,
                 items: unitOptions
@@ -176,19 +222,17 @@ class _InventoryTabState extends State<InventoryTab> {
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.black),
               onPressed: () async {
-                if (nameC.text.trim().isEmpty) return; // 空白なら保存しない
+                if (nameC.text.trim().isEmpty) return;
 
                 await _supabase.from('item_master').insert({
                   'id': '$selCat-${DateTime.now().millisecondsSinceEpoch}',
                   'name': nameC.text.trim(),
                   'category_code': selCat,
-                  // ★ 追加3: 決め打ちではなく、選んだ単位（selUnit）を保存する
                   'unit': selUnit,
                 });
-
                 if (!mounted) return;
                 Navigator.pop(context);
-                _fetch(); // リストを再取得
+                _fetch();
               },
               child: const Text('SAVE', style: TextStyle(color: Colors.white)),
             ),
@@ -269,7 +313,7 @@ class _InventoryTabState extends State<InventoryTab> {
                       onTap: () {
                         setState(() {
                           _selectedCategory = cat;
-                          _selectedItem = null; // カテゴリを変えたら選択解除
+                          _selectedItem = null;
                         });
                         _fetch();
                       },
@@ -328,8 +372,9 @@ class _InventoryTabState extends State<InventoryTab> {
                             onTap: () {
                               setState(() {
                                 _selectedItem = item;
-                                _txType = 'IN'; // 選んだ時はデフォルトで入庫に
+                                _txType = 'IN';
                               });
+                              _fetchTransactions(item['id']);
                             },
                           );
                         },
@@ -369,7 +414,7 @@ class _InventoryTabState extends State<InventoryTab> {
                                     ),
                                   ),
                                   Text(
-                                    '在庫: 0.0 ${_selectedItem!['unit']}',
+                                    '在庫: ${_currentStock.toStringAsFixed(1)} ${_selectedItem!['unit']}',
                                     style: TextStyle(
                                       fontSize: 24,
                                       fontWeight: FontWeight.bold,
@@ -387,7 +432,6 @@ class _InventoryTabState extends State<InventoryTab> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // IN / OUT ラジオボタン
                                   Row(
                                     children: [
                                       Radio<String>(
@@ -421,11 +465,33 @@ class _InventoryTabState extends State<InventoryTab> {
                                       ),
                                     ],
                                   ),
-                                  const SizedBox(height: 8),
+                                  const SizedBox(height: 12),
 
-                                  // 入力欄
+                                  // ★★★ 入力欄を2段に分けました！ ★★★
+                                  // --- 1段目：日付、数量、総額 ---
                                   Row(
                                     children: [
+                                      // 日付選択（タップするとカレンダーが出ます）
+                                      Expanded(
+                                        child: InkWell(
+                                          onTap: _pickDate,
+                                          child: InputDecorator(
+                                            decoration: const InputDecoration(
+                                              labelText: '日付',
+                                              border: OutlineInputBorder(),
+                                            ),
+                                            child: Text(
+                                              '${_selectedDate.year}/${_selectedDate.month.toString().padLeft(2, '0')}/${_selectedDate.day.toString().padLeft(2, '0')}',
+                                              style: const TextStyle(
+                                                fontSize: 16,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+
+                                      // 数量
                                       Expanded(
                                         child: TextField(
                                           controller: _qtyController,
@@ -442,6 +508,7 @@ class _InventoryTabState extends State<InventoryTab> {
                                       ),
                                       const SizedBox(width: 8),
 
+                                      // 総額 (INのみ)
                                       if (_txType == 'IN')
                                         Expanded(
                                           child: TextField(
@@ -453,9 +520,17 @@ class _InventoryTabState extends State<InventoryTab> {
                                             ),
                                           ),
                                         ),
-                                      if (_txType == 'IN')
-                                        const SizedBox(width: 8),
+                                      if (_txType ==
+                                          'OUT') // OUTの時はレイアウトが崩れないよう空箱を置く
+                                        const Expanded(child: SizedBox()),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
 
+                                  // --- 2段目：メモ、仕入先、SAVEボタン ---
+                                  Row(
+                                    children: [
+                                      // メモ
                                       Expanded(
                                         child: TextField(
                                           controller: _memoController,
@@ -467,6 +542,7 @@ class _InventoryTabState extends State<InventoryTab> {
                                       ),
                                       const SizedBox(width: 8),
 
+                                      // 仕入先 (INのみ)
                                       if (_txType == 'IN')
                                         Expanded(
                                           child: DropdownButtonFormField<int>(
@@ -481,8 +557,8 @@ class _InventoryTabState extends State<InventoryTab> {
                                                 value: s['id'] as int,
                                                 child: Text(
                                                   s['name'],
-                                                  overflow: TextOverflow
-                                                      .ellipsis, // ★念のため文字が長すぎる時は「...」で省略する設定も追加
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                 ),
                                               );
                                             }).toList(),
@@ -491,10 +567,14 @@ class _InventoryTabState extends State<InventoryTab> {
                                             ),
                                           ),
                                         ),
+                                      if (_txType == 'OUT')
+                                        const Expanded(child: SizedBox()),
                                       const SizedBox(width: 16),
 
+                                      // SAVEボタン
                                       SizedBox(
                                         height: 56,
+                                        width: 120, // ボタンの幅を固定
                                         child: ElevatedButton(
                                           onPressed: _saveTransaction,
                                           style: ElevatedButton.styleFrom(
@@ -511,6 +591,7 @@ class _InventoryTabState extends State<InventoryTab> {
                                       ),
                                     ],
                                   ),
+                                  // ★★★ ここまで ★★★
                                 ],
                               ),
                             ),
@@ -520,9 +601,77 @@ class _InventoryTabState extends State<InventoryTab> {
                             Expanded(
                               child: Container(
                                 color: Colors.grey[50],
-                                child: const Center(
-                                  child: Text('ここに時系列の取引履歴（リスト）が並びます'),
-                                ),
+                                child: _loadingTx
+                                    ? const Center(
+                                        child: CircularProgressIndicator(),
+                                      )
+                                    : _transactions.isEmpty
+                                    ? const Center(
+                                        child: Text(
+                                          'まだ取引履歴がありません',
+                                          style: TextStyle(color: Colors.grey),
+                                        ),
+                                      )
+                                    : ListView.builder(
+                                        itemCount: _transactions.length,
+                                        itemBuilder: (context, index) {
+                                          final tx = _transactions[index];
+                                          final isIN =
+                                              tx['transaction_type'] == 'IN';
+                                          final date = DateTime.parse(
+                                            tx['created_at'],
+                                          ).toLocal();
+                                          final dateStr =
+                                              '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+
+                                          return Card(
+                                            margin: const EdgeInsets.symmetric(
+                                              horizontal: 16,
+                                              vertical: 4,
+                                            ),
+                                            child: ListTile(
+                                              leading: CircleAvatar(
+                                                backgroundColor: isIN
+                                                    ? Colors.blue[100]
+                                                    : Colors.red[100],
+                                                child: Text(
+                                                  isIN ? 'IN' : 'OUT',
+                                                  style: TextStyle(
+                                                    color: isIN
+                                                        ? Colors.blue[800]
+                                                        : Colors.red[800],
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ),
+                                              title: Text(
+                                                '${isIN ? "+" : "-"}${tx['amount']} ${tx['unit']}',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: isIN
+                                                      ? Colors.blue[700]
+                                                      : Colors.red[700],
+                                                ),
+                                              ),
+                                              subtitle: Text(
+                                                '$dateStr${tx['memo'] != null && tx['memo'] != '' ? ' | メモ: ${tx['memo']}' : ''}',
+                                              ),
+                                              trailing:
+                                                  tx['price'] != null &&
+                                                      tx['price'] > 0
+                                                  ? Text(
+                                                      '¥${tx['price']}',
+                                                      style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    )
+                                                  : null,
+                                            ),
+                                          );
+                                        },
+                                      ),
                               ),
                             ),
                           ],
