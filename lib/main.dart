@@ -687,20 +687,33 @@ class _KegManagerMainState extends State<KegManagerMain> {
         body: Center(child: CircularProgressIndicator(color: Colors.black)),
       );
     }
+
+    // ★追加: スマホの画面幅を取得
+    double screenWidth = MediaQuery.of(context).size.width;
+    // ★追加: 最低でも1100px（PC・タブレットサイズ）の横幅を強制的に確保
+    double minAppWidth = 1100;
+
     return Scaffold(
-      // ★ 追加: 画面右下に浮かぶ計算機ボタン！
       floatingActionButton: FloatingActionButton(
         backgroundColor: Colors.amber,
         onPressed: _showDilutionCalculator,
         child: const Icon(Icons.calculate, color: Colors.black, size: 28),
       ),
       body: SafeArea(
-        child: Column(
-          children: [
-            _buildTopHeader(),
-            const Divider(thickness: 2, height: 1, color: Colors.black),
-            Expanded(child: _buildBody()),
-          ],
+        // ★追加: 画面が小さい時は指で横スクロールできるようにする魔法
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            // 実際の画面幅が1100px未満のスマホなら1100pxに固定、それ以上なら画面幅に合わせる
+            width: screenWidth < minAppWidth ? minAppWidth : screenWidth,
+            child: Column(
+              children: [
+                _buildTopHeader(),
+                const Divider(thickness: 2, height: 1, color: Colors.black),
+                Expanded(child: _buildBody()),
+              ],
+            ),
+          ),
         ),
       ),
     );
